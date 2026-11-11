@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+.env
+
+# Tools
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Model weights (large; share separately)
+*.pt
+*.pth
+*.ckpt
+*.sav
+
+# Image data and run outputs (large)
+*.tif
+*.tiff
+*.npz
+out/
+cmp/
+eval_out/
+prev/
+compare_outs/
+
+# Scripts
+Scripts/
