@@ -31,8 +31,9 @@ class ConnectedComponentsSegmenter(InstanceSegmenter):
         if n:
             sizes = np.bincount(labels.ravel())
             labels[sizes[labels] < self.min_size] = 0
-        return SegmentationResult(labels=InstanceLabels.consecutive(labels), method=self.name,
-                                  info=dict(components=int(n)))
+        return SegmentationResult(
+            labels=InstanceLabels.consecutive(labels), method=self.name, info=dict(components=int(n))
+        )
 
 
 class ConnectedComponentsPlugin(SegmenterPlugin):

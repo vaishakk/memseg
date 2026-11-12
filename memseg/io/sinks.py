@@ -33,17 +33,25 @@ class LabelTiffSink(ResultSink):
 
 
 class PreviewSink(ResultSink):
-    """Colour PNG preview; overlays (skeleton, junctions) are drawn if the method provides them."""
+    """Colour PNG preview of the instances.
 
-    def __init__(self, out_dir: str, suffix: str = "_preview.png", max_size: int = 1600, overlay: bool = True):
+    With `overlay`, the method's drawing hints (skeleton, junctions) are drawn on top, if it provides any;
+    off by default so previews show only the instances.
+    """
+
+    def __init__(self, out_dir: str, suffix: str = "_preview.png", max_size: int = 1600, overlay: bool = False):
         self.out_dir, self.suffix, self.max_size, self.overlay = out_dir, suffix, max_size, overlay
 
     def exists(self, ref: ImageRef) -> bool:
         return os.path.isfile(_out_path(self.out_dir, ref, self.suffix))
 
     def save(self, ref: ImageRef, result: SegmentationResult) -> None:
-        save_preview(_out_path(self.out_dir, ref, self.suffix), result.labels.data,
-                     result.overlay if self.overlay else None, self.max_size)
+        save_preview(
+            _out_path(self.out_dir, ref, self.suffix),
+            result.labels.data,
+            result.overlay if self.overlay else None,
+            self.max_size,
+        )
 
 
 class ArtifactSink(ResultSink):
@@ -60,4 +68,4 @@ class ArtifactSink(ResultSink):
             return
         p = _out_path(self.out_dir, ref, "_raw.npz")
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-        np.savez_compressed(p, **result.artifacts)
+        np.savez_compressed(p, **result.artifacts)  # type: ignore[arg-type]  # numpy stubs mistype **arrays

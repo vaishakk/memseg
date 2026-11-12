@@ -6,20 +6,39 @@ import csv
 import json
 import os
 import sys
-from typing import Optional, Sequence, TextIO
+from collections.abc import Sequence
+from typing import Any, TextIO
 
-from ..domain.models import ComparisonItem, ComparisonSummary, EvaluationSummary, ItemOutcome, Status
-from ..domain.ports import ComparisonListener, ComparisonReportWriter, ProgressListener, ReportWriter
+from ..domain.models import (
+    ComparisonItem,
+    ComparisonSummary,
+    EvaluationSummary,
+    ItemOutcome,
+    MicrographOutcome,
+    SemanticSummary,
+    Status,
+)
+from ..domain.ports import (
+    ComparisonListener,
+    ComparisonReportWriter,
+    ProgressListener,
+    ReportWriter,
+    SemanticReportWriter,
+)
 
 
-class CsvReportWriter(ReportWriter):
+class CsvReportWriter(ReportWriter, SemanticReportWriter):
     """summary.csv with one row per image (columns = union of all row keys);
-    with an evaluation summary also summary.json."""
+    with a summary (evaluation or semantic) also summary.json."""
 
     def __init__(self, out_dir: str, name: str = "summary.csv"):
         self.out_dir, self.name = out_dir, name
 
-    def write(self, outcomes: Sequence[ItemOutcome], summary: Optional[EvaluationSummary] = None) -> None:
+    def write(
+        self,
+        outcomes: Sequence[ItemOutcome] | Sequence[MicrographOutcome],
+        summary: EvaluationSummary | SemanticSummary | None = None,
+    ) -> None:
         os.makedirs(self.out_dir, exist_ok=True)
         rows = [dict(o.report_row()) for o in outcomes]
         keys: list[str] = []
@@ -60,6 +79,7 @@ class ConsoleProgress(ProgressListener):
             self._p(f"{head} FAILED  {o.error}")
         else:
             r = o.result
+            assert r is not None and o.shape is not None  # OK outcomes carry a result
             info = "  ".join(f"{k} {_fmt(v)}" for k, v in r.info.items())
             line = f"{head} {o.shape[1]}x{o.shape[0]}  {info}  instances {r.labels.n_instances}  {o.seconds:.1f}s"
             if o.match is not None:
@@ -71,15 +91,18 @@ class ConsoleProgress(ProgressListener):
                 line += f"  gt {m.tp + m.fn}  F1 {f1:.3f}  IoU {iou:.3f}"
             self._p(line)
 
-    def finished(self, outcomes: Sequence[ItemOutcome], summary: Optional[EvaluationSummary]) -> None:
+    def finished(self, outcomes: Sequence[ItemOutcome], summary: EvaluationSummary | None) -> None:
         n = {s: sum(o.status is s for o in outcomes) for s in Status}
         self._p(f"done: {n[Status.OK]} ok, {n[Status.FAILED]} failed, {n[Status.SKIPPED]} skipped")
         if summary is not None:
-            self._p("OVERALL: " + json.dumps({k: round(v, 4) if isinstance(v, float) else v
-                                              for k, v in summary.as_dict().items()}))
+            self._p(
+                "OVERALL: "
+                + json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in summary.as_dict().items()})
+            )
 
 
 # ───────────────────────────────────────────── method comparison ──
+
 
 def _r(v, n=4):
     return None if v is None else round(v, n)
@@ -113,15 +136,25 @@ def comparison_rows(items: Sequence[ComparisonItem]) -> list[dict]:
 
 
 def comparison_dict(summary: ComparisonSummary) -> dict:
-    out = dict(n_images=summary.n_images, n_with_ground_truth=summary.n_with_gt, methods={})
+    out: dict[str, Any] = dict(n_images=summary.n_images, n_with_ground_truth=summary.n_with_gt, methods={})
     for m in summary.methods:
-        d = dict(description=m.description, ok=m.n_ok, failed=m.n_failed, setup_seconds=_r(m.setup_seconds, 2),
-                 total_seconds=_r(m.total_seconds, 2), mean_seconds_per_image=_r(m.mean_seconds, 3),
-                 total_instances=m.total_instances)
+        d: dict[str, Any] = dict(
+            description=m.description,
+            ok=m.n_ok,
+            failed=m.n_failed,
+            setup_seconds=_r(m.setup_seconds, 2),
+            total_seconds=_r(m.total_seconds, 2),
+            mean_seconds_per_image=_r(m.mean_seconds, 3),
+            total_instances=m.total_instances,
+        )
         if m.evaluation is not None:
-            d.update(f1=_r(m.evaluation.f1), precision=_r(m.evaluation.precision),
-                     recall=_r(m.evaluation.recall), mean_matched_iou=_r(m.evaluation.mean_matched_iou),
-                     pair_auroc=_r(m.pair_auroc))
+            d.update(
+                f1=_r(m.evaluation.f1),
+                precision=_r(m.evaluation.precision),
+                recall=_r(m.evaluation.recall),
+                mean_matched_iou=_r(m.evaluation.mean_matched_iou),
+                pair_auroc=_r(m.pair_auroc),
+            )
             if m.pairs is not None:
                 d["pairs"] = dict(tp=m.pairs.tp, fn=m.pairs.fn, fp=m.pairs.fp, tn=m.pairs.tn)
         out["methods"][m.method] = d
@@ -174,6 +207,7 @@ class ConsoleComparison(ComparisonListener):
             if o.status is not Status.OK:
                 parts.append(f"{name}: FAILED ({o.error})")
                 continue
+            assert o.result is not None
             s = f"{name}: {o.result.labels.n_instances} inst {o.seconds:.2f}s"
             if o.match is not None:
                 s += f" F1 {o.f1:.3f}"
@@ -195,8 +229,10 @@ class ConsoleComparison(ComparisonListener):
         ]
         has_gt = any(m.evaluation is not None for m in ms)
         if has_gt:
+
             def f(v):
                 return "-" if v is None else f"{v:.4f}"
+
             rows += [
                 ("F1", [f(m.evaluation.f1 if m.evaluation else None) for m in ms]),
                 ("precision", [f(m.evaluation.precision if m.evaluation else None) for m in ms]),
@@ -205,19 +241,29 @@ class ConsoleComparison(ComparisonListener):
                 ("pair AUROC", [f(m.pair_auroc) for m in ms]),
             ]
         self._p()
-        self._p("RESULTS" + (f"  (ground truth for {summary.n_with_gt}/{summary.n_images} images)"
-                             if has_gt else "  (no ground truth: timing and counts only)"))
+        self._p(
+            "RESULTS"
+            + (
+                f"  (ground truth for {summary.n_with_gt}/{summary.n_images} images)"
+                if has_gt
+                else "  (no ground truth: timing and counts only)"
+            )
+        )
         self._p(f"{'':22s}" + "".join(f"{m.method:>{w}s}" for m in ms))
         for label, vals in rows:
             self._p(f"{label:22s}" + "".join(f"{v:>{w}s}" for v in vals))
         ok = [m for m in ms if m.n_ok and m.mean_seconds > 0]
         if len(ok) >= 2:
             fast, slow = min(ok, key=lambda m: m.mean_seconds), max(ok, key=lambda m: m.mean_seconds)
-            self._p(f"\n{fast.method} is {slow.mean_seconds / fast.mean_seconds:.1f}x faster than {slow.method} "
-                    f"per image (excluding setup)")
+            self._p(
+                f"\n{fast.method} is {slow.mean_seconds / fast.mean_seconds:.1f}x faster than {slow.method} "
+                f"per image (excluding setup)"
+            )
         if has_gt:
-            scored = [m for m in ms if m.evaluation is not None]
-            best = max(scored, key=lambda m: m.evaluation.f1)
-            self._p(f"best F1: {best.method} ({best.evaluation.f1:.4f})")
-            self._p("pair AUROC: same-instance decision on sampled nearby pairs of ground-truth membrane "
-                    "pixels; methods give hard labels, so it equals balanced accuracy on those pairs")
+            scored = [(m.method, m.evaluation) for m in ms if m.evaluation is not None]
+            best, ev = max(scored, key=lambda p: p[1].f1)
+            self._p(f"best F1: {best} ({ev.f1:.4f})")
+            self._p(
+                "pair AUROC: same-instance decision on sampled nearby pairs of ground-truth membrane "
+                "pixels; methods give hard labels, so it equals balanced accuracy on those pairs"
+            )

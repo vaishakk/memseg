@@ -9,10 +9,23 @@ injected by the composition root (memseg.cli).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterable, Iterator, Optional, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from typing import Any
 
-from .models import (ComparisonItem, ComparisonSummary, EvaluationSummary, ImageRef, InstanceLabels, ItemOutcome,
-                     MembraneMask, Micrograph, MicrographOutcome, SegmentationResult, SemanticResult, SemanticSummary)
+from .models import (
+    ComparisonItem,
+    ComparisonSummary,
+    EvaluationSummary,
+    ImageRef,
+    InstanceLabels,
+    ItemOutcome,
+    MembraneMask,
+    Micrograph,
+    MicrographOutcome,
+    SegmentationResult,
+    SemanticResult,
+    SemanticSummary,
+)
 
 
 class InstanceSegmenter(ABC):
@@ -76,34 +89,11 @@ class ProgressListener(ABC):
         pass
 
 
-class NullSink(ResultSink):
-    def exists(self, ref: ImageRef) -> bool:
-        return False
-
-    def save(self, ref: ImageRef, result: SegmentationResult) -> None:
-        pass
-
-
-class CompositeSink(ResultSink):
-    """Fan out to several sinks. The first sink is the primary output: `exists` asks it only,
-    so a missing optional extra (e.g. a preview) does not force recomputation."""
-
-    def __init__(self, sinks: Iterable[ResultSink]):
-        self.sinks = list(sinks)
-
-    def exists(self, ref: ImageRef) -> bool:
-        return bool(self.sinks) and self.sinks[0].exists(ref)
-
-    def save(self, ref: ImageRef, result: SegmentationResult) -> None:
-        for s in self.sinks:
-            s.save(ref, result)
-
-
 class ComparisonSink(ABC):
     """Persists one compared image (e.g. a side-by-side preview of all methods)."""
 
     @abstractmethod
-    def save(self, item: ComparisonItem, mask: MembraneMask, gt: Optional[InstanceLabels]) -> None: ...
+    def save(self, item: ComparisonItem, mask: MembraneMask, gt: InstanceLabels | None) -> None: ...
 
 
 class ComparisonReportWriter(ABC):
@@ -123,6 +113,7 @@ class ComparisonListener(ABC):
 
 
 # ───────────────────────────────────────────── semantic segmentation ──
+
 
 class SemanticSegmenter(ABC):
     """A semantic segmentation method: micrograph in, membrane mask (+ optional probability) out."""
@@ -161,6 +152,33 @@ class SemanticSink(ABC):
     def save(self, ref: ImageRef, result: SemanticResult) -> None: ...
 
 
+class NullSink(ResultSink, SemanticSink):
+    """Discards results (instance or semantic)."""
+
+    def exists(self, ref: ImageRef) -> bool:
+        return False
+
+    def save(self, ref: ImageRef, result: Any) -> None:
+        pass
+
+
+class CompositeSink(ResultSink, SemanticSink):
+    """Fan out to several sinks of one family (all ResultSink or all SemanticSink).
+
+    The first sink is the primary output: `exists` asks it only,
+    so a missing optional extra (e.g. a preview) does not force recomputation."""
+
+    def __init__(self, sinks: Iterable[ResultSink] | Iterable[SemanticSink]):
+        self.sinks: list[ResultSink | SemanticSink] = list(sinks)
+
+    def exists(self, ref: ImageRef) -> bool:
+        return bool(self.sinks) and self.sinks[0].exists(ref)
+
+    def save(self, ref: ImageRef, result: Any) -> None:
+        for s in self.sinks:
+            s.save(ref, result)
+
+
 class SemanticReportWriter(ABC):
     @abstractmethod
     def write(self, outcomes: Sequence[MicrographOutcome], summary: SemanticSummary | None = None) -> None: ...
@@ -173,5 +191,7 @@ class MicrographListener(ABC):
     def item_done(self, index: int, total: int, outcome: MicrographOutcome) -> None:  # pragma: no cover
         pass
 
-    def finished(self, outcomes: Sequence[MicrographOutcome], summary: SemanticSummary | None) -> None:  # pragma: no cover
+    def finished(
+        self, outcomes: Sequence[MicrographOutcome], summary: SemanticSummary | None
+    ) -> None:  # pragma: no cover
         pass

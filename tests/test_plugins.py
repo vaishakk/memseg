@@ -9,18 +9,18 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memseg import registry, segmenters  # noqa: E402
-from memseg.cli import main  # noqa: E402
-from memseg.domain import MembraneMask  # noqa: E402
-from memseg.segmenters.base import SegmenterPlugin  # noqa: E402
-from memseg.segmenters.components import ConnectedComponentsSegmenter  # noqa: E402
+from memseg import registry, segmenters
+from memseg.cli import main
+from memseg.domain import MembraneMask
+from memseg.segmenters.base import SegmenterPlugin
+from memseg.segmenters.components import ConnectedComponentsSegmenter
 
 
 def test_components_one_instance_per_piece_and_drops_specks():
     m = np.zeros((40, 40), bool)
-    m[5:10, 5:30] = True       # 125 px
-    m[20:30, 20:22] = True     # 20 px
-    m[35, 35] = True           # 1 px speck
+    m[5:10, 5:30] = True  # 125 px
+    m[20:30, 20:22] = True  # 20 px
+    m[35, 35] = True  # 1 px speck
     res = ConnectedComponentsSegmenter(min_size=10).segment(MembraneMask(m))
     assert res.labels.n_instances == 2
     assert res.info["components"] == 3

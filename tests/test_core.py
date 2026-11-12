@@ -10,10 +10,23 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memseg.application import CompareSegmenters, EvaluateSegmenter, SegmentImages  # noqa: E402
-from memseg.domain import (GroundTruthReader, ImageRef, ImageSource, InstanceLabels, InstanceSegmenter,  # noqa: E402
-                           MaskReader, MembraneMask, PairCounts, ResultSink, SegmentationResult, Status,
-                           match_instances, pair_counts, sample_pixel_pairs)
+from memseg.application import CompareSegmenters, EvaluateSegmenter, SegmentImages
+from memseg.domain import (
+    GroundTruthReader,
+    ImageRef,
+    ImageSource,
+    InstanceLabels,
+    InstanceSegmenter,
+    MaskReader,
+    MembraneMask,
+    PairCounts,
+    ResultSink,
+    SegmentationResult,
+    Status,
+    match_instances,
+    pair_counts,
+    sample_pixel_pairs,
+)
 
 
 def two_rings():
@@ -27,10 +40,12 @@ def two_rings():
 
 class ConnectedComponents(InstanceSegmenter):
     """Trivial method: each connected piece of membrane is one instance."""
+
     name = "cc"
 
     def segment(self, mask):
         from scipy import ndimage as ndi
+
         lab, _ = ndi.label(mask.data, structure=np.ones((3, 3)))
         return SegmentationResult(InstanceLabels(lab), self.name, info=dict(pieces=int(lab.max())))
 
@@ -133,6 +148,7 @@ class ListSource(ImageSource):
 
 class OneLabel(InstanceSegmenter):
     """Merges everything into one instance (wrong where rings are separate)."""
+
     name = "one"
 
     def segment(self, mask):
@@ -153,8 +169,9 @@ def test_pair_auroc_perfect_and_merged():
 def test_compare_runs_all_methods_on_same_pairs():
     mask, gt = two_rings()
     mem = Memory({"a": (mask, gt), "b": (mask, gt)})
-    items, summary = CompareSegmenters({"cc": ConnectedComponents(), "one": OneLabel()}, mem, MaskMem(mem),
-                                       GtMem(mem)).run()
+    items, summary = CompareSegmenters(
+        {"cc": ConnectedComponents(), "one": OneLabel()}, mem, MaskMem(mem), GtMem(mem)
+    ).run()
     assert [set(it.outcomes) for it in items] == [{"cc", "one"}] * 2
     by = {m.method: m for m in summary.methods}
     assert by["cc"].evaluation.f1 == 1.0 and by["cc"].pair_auroc == 1.0
@@ -167,8 +184,9 @@ def test_compare_without_ground_truth_reports_timing_only():
     mask, _ = two_rings()
     mem = Memory({"a": (mask, None)})
     no_gt = ListSource([ImageRef("a", "a")])  # gt_path is None
-    items, summary = CompareSegmenters({"cc": ConnectedComponents(), "one": OneLabel()}, no_gt,
-                                       MaskMem(mem), GtMem(mem)).run()
+    items, summary = CompareSegmenters(
+        {"cc": ConnectedComponents(), "one": OneLabel()}, no_gt, MaskMem(mem), GtMem(mem)
+    ).run()
     assert not items[0].has_gt
     assert all(m.evaluation is None and m.n_ok == 1 and m.total_seconds >= 0 for m in summary.methods)
 
@@ -178,3 +196,19 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
             print("ok", name)
+
+
+def test_preview_overlay_is_opt_in(tmp_path, monkeypatch):
+    from memseg.domain import ImageRef, InstanceLabels, Overlay, SegmentationResult
+    from memseg.io import sinks
+
+    seen = []
+    monkeypatch.setattr(sinks, "save_preview", lambda path, labels, overlay, max_size: seen.append(overlay))
+    lab = np.zeros((8, 8), np.int32)
+    lab[2:4, 2:6] = 1
+    ov = Overlay(skeleton=lab > 0)
+    res = SegmentationResult(labels=InstanceLabels(lab), method="x", overlay=ov)
+    ref = ImageRef(str(tmp_path / "a.tif"), "a.tif")
+    sinks.PreviewSink(str(tmp_path)).save(ref, res)
+    sinks.PreviewSink(str(tmp_path), overlay=True).save(ref, res)
+    assert seen == [None, ov]

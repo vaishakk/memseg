@@ -16,19 +16,36 @@ Methods are plugins: see memseg.segmenters (instance) and memseg.semantic (seman
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 import time
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 from . import segmenters, semantic
 from .application import CompareSegmenters, EvaluateSegmenter, PairSampling, SegmentImages, SegmentMicrographs
-from .domain import CompositeSink, NullSink, Status
-from .io import (IMAGE_EXTS, MICROGRAPH_EXTS, ArtifactSink, ComparisonCsvReport, ConsoleComparison,
-                 ConsoleMicrographProgress, ConsoleProgress, CsvReportWriter, FolderImageSource,
-                 ImageFileGroundTruthMaskReader, ImageFileGroundTruthReader, ImageFileMaskReader,
-                 LabelledDatasetSource, LabelTiffSink, MicrographFileReader, PreviewSink, SemanticMaskSink,
-                 SemanticPreviewSink, SideBySideSink)
+from .domain import CompositeSink, ImageSource, NullSink, ResultSink, SemanticSink, Status
+from .io import (
+    IMAGE_EXTS,
+    MICROGRAPH_EXTS,
+    ArtifactSink,
+    ComparisonCsvReport,
+    ConsoleComparison,
+    ConsoleMicrographProgress,
+    ConsoleProgress,
+    CsvReportWriter,
+    FolderImageSource,
+    ImageFileGroundTruthMaskReader,
+    ImageFileGroundTruthReader,
+    ImageFileMaskReader,
+    LabelledDatasetSource,
+    LabelTiffSink,
+    MicrographFileReader,
+    PreviewSink,
+    SemanticMaskSink,
+    SemanticPreviewSink,
+    SideBySideSink,
+)
 from .io.sources import is_labelled_dataset
 from .segmenters.base import load_overrides
 
@@ -37,28 +54,45 @@ DEFAULT_SEMANTIC_METHOD = "threshold"
 
 
 def _common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--method", "-m", default=DEFAULT_METHOD, choices=segmenters.available(),
-                   help="segmentation method")
+    p.add_argument("--method", "-m", default=DEFAULT_METHOD, choices=segmenters.available(), help="segmentation method")
     p.add_argument("--config", default=None, help="JSON file with method parameters")
-    p.add_argument("--set", action="append", metavar="KEY=VALUE", default=[],
-                   help="override one method parameter (repeatable), e.g. --set min_size=100")
+    p.add_argument(
+        "--set",
+        action="append",
+        metavar="KEY=VALUE",
+        default=[],
+        help="override one method parameter (repeatable), e.g. --set min_size=100",
+    )
     p.add_argument("--preview_dir", default=None, help="write colour PNG previews here")
+    p.add_argument(
+        "--preview_overlay",
+        action="store_true",
+        help="draw the method's overlay (e.g. skeleton, junctions) on instance previews",
+    )
     p.add_argument("--limit", type=int, default=None, help="process at most N images")
     p.add_argument("--sample", type=int, default=None, help="process N randomly chosen images")
     p.add_argument("--seed", type=int, default=0, help="random seed for --sample")
 
 
-def build_parser(method: Optional[str] = None, compare_methods: Sequence[str] = ()) -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="memseg", description="Membrane instance segmentation.",
-                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+def build_parser(method: str | None = None, compare_methods: Sequence[str] = ()) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="memseg",
+        description="Membrane instance segmentation.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     sub = ap.add_subparsers(dest="command", required=True)
 
     sub.add_parser("methods", help="list available segmentation methods")
-    sub.add_parser("semantic", help="segment micrographs into membrane masks (optionally then into instances); "
-                                    "see `memseg semantic --help`")
+    sub.add_parser(
+        "semantic",
+        help="segment micrographs into membrane masks (optionally then into instances); see `memseg semantic --help`",
+    )
 
-    s = sub.add_parser("segment", help="segment masks and write instance label maps",
-                       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    s = sub.add_parser(
+        "segment",
+        help="segment masks and write instance label maps",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     s.add_argument("inputs", nargs="+", help="mask files or folders (searched recursively)")
     s.add_argument("--output_dir", "-o", default=None, help="write label maps (+ summary.csv) here")
     _common(s)
@@ -68,37 +102,72 @@ def build_parser(method: Optional[str] = None, compare_methods: Sequence[str] = 
     s.add_argument("--ext", default=",".join(IMAGE_EXTS), help="comma-separated input extensions")
     s.add_argument("--no_recursive", action="store_true", help="do not descend into sub-folders")
 
-    e = sub.add_parser("evaluate", help="segment labelled datasets (masks/ + labels/) and report F1 / IoU",
-                       formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    e = sub.add_parser(
+        "evaluate",
+        help="segment labelled datasets (masks/ + labels/) and report F1 / IoU",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     e.add_argument("datasets", nargs="+", help="dataset folders containing masks/ and labels/")
-    e.add_argument("--output_dir", "-o", default=None,
-                   help="write predicted label maps, summary.csv and summary.json here")
+    e.add_argument(
+        "--output_dir", "-o", default=None, help="write predicted label maps, summary.csv and summary.json here"
+    )
     e.add_argument("--iou", type=float, default=0.5, help="IoU threshold for a match")
     _common(e)
 
-    c = sub.add_parser("compare", help="run several methods on the same masks and compare results and run time",
-                       formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-                       description="Runs every method on every mask, times it, scores it when ground truth "
-                                   "is available (F1 and pair AUROC), and writes side-by-side previews.")
-    c.add_argument("inputs", nargs="+",
-                   help="mask files/folders, or labelled dataset folders (masks/ + labels/: ground truth is used)")
-    c.add_argument("--output_dir", "-o", required=True,
-                   help="output folder: side_by_side/, <method>/ label maps, comparison.csv/.json")
-    c.add_argument("--methods", nargs="+", default=segmenters.available(), choices=segmenters.available(),
-                   help="methods to compare (at least two; default: all installed)")
-    c.add_argument("--gt_dir", default=None,
-                   help="ground-truth label maps for plain mask folders (same relative names; mask_X -> label_X ok)")
-    c.add_argument("--config", action="append", default=[], metavar="METHOD=FILE",
-                   help="JSON parameters for one method (repeatable)")
-    c.add_argument("--set", action="append", default=[], metavar="METHOD.KEY=VALUE",
-                   help="override one parameter of one method (repeatable), e.g. --set components.min_size=100")
+    c = sub.add_parser(
+        "compare",
+        help="run several methods on the same masks and compare results and run time",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Runs every method on every mask, times it, scores it when ground truth "
+        "is available (F1 and pair AUROC), and writes side-by-side previews.",
+    )
+    c.add_argument(
+        "inputs",
+        nargs="+",
+        help="mask files/folders, or labelled dataset folders (masks/ + labels/: ground truth is used)",
+    )
+    c.add_argument(
+        "--output_dir",
+        "-o",
+        required=True,
+        help="output folder: side_by_side/, <method>/ label maps, comparison.csv/.json",
+    )
+    c.add_argument(
+        "--methods",
+        nargs="+",
+        default=segmenters.available(),
+        choices=segmenters.available(),
+        help="methods to compare (at least two; default: all installed)",
+    )
+    c.add_argument(
+        "--gt_dir",
+        default=None,
+        help="ground-truth label maps for plain mask folders (same relative names; mask_X -> label_X ok)",
+    )
+    c.add_argument(
+        "--config",
+        action="append",
+        default=[],
+        metavar="METHOD=FILE",
+        help="JSON parameters for one method (repeatable)",
+    )
+    c.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="METHOD.KEY=VALUE",
+        help="override one parameter of one method (repeatable), e.g. --set components.min_size=100",
+    )
     c.add_argument("--iou", type=float, default=0.5, help="IoU threshold for an instance match (F1)")
     c.add_argument("--pairs", type=int, default=20000, help="pixel pairs per image for the pair AUROC")
     c.add_argument("--pair_radius", type=float, default=100.0, help="max distance (px) between paired pixels")
     c.add_argument("--panel_size", type=int, default=900, help="max side (px) of each preview panel")
     c.add_argument("--no_labels", action="store_true", help="do not write per-method label maps")
-    c.add_argument("--warmup", action="store_true",
-                   help="run each method once on the first image before timing (excludes GPU start-up)")
+    c.add_argument(
+        "--warmup",
+        action="store_true",
+        help="run each method once on the first image before timing (excludes GPU start-up)",
+    )
     c.add_argument("--ext", default=",".join(IMAGE_EXTS), help="comma-separated input extensions")
     c.add_argument("--no_recursive", action="store_true", help="do not descend into sub-folders")
     c.add_argument("--limit", type=int, default=None, help="process at most N images")
@@ -106,10 +175,9 @@ def build_parser(method: Optional[str] = None, compare_methods: Sequence[str] = 
     c.add_argument("--seed", type=int, default=0, help="random seed for --sample and pair sampling")
     for m in dict.fromkeys(compare_methods):
         group = c.add_argument_group(f"{m} method options")
-        try:
+        # an option with the same name is already declared by another method: it is shared
+        with contextlib.suppress(argparse.ArgumentError):
             segmenters.get_plugin(m).add_arguments(group)
-        except argparse.ArgumentError:
-            pass  # an option with the same name is already declared by another method: it is shared
 
     if method:  # method-specific options, shown in --help once the method is known
         plugin = segmenters.get_plugin(method)
@@ -167,22 +235,37 @@ def run_compare(args) -> int:
     if datasets and len(datasets) != len(args.inputs):
         print("mix of labelled dataset folders and plain mask inputs; run them separately", file=sys.stderr)
         return 2
+    source: ImageSource
     if datasets:
         source = LabelledDatasetSource(datasets, sample=args.sample, seed=args.seed, limit=args.limit)
     else:
         exts = [x.strip() for x in args.ext.split(",") if x.strip()]
-        source = FolderImageSource(args.inputs, exts, recursive=not args.no_recursive, exclude_dirs=[out_dir],
-                                   sample=args.sample, seed=args.seed, limit=args.limit, gt_dir=args.gt_dir)
+        source = FolderImageSource(
+            args.inputs,
+            exts,
+            recursive=not args.no_recursive,
+            exclude_dirs=[out_dir],
+            sample=args.sample,
+            seed=args.seed,
+            limit=args.limit,
+            gt_dir=args.gt_dir,
+        )
 
     header = "\n".join(f"{m:12s}{built[m].describe()}  (setup {setup[m]:.1f} s)" for m in methods)
     use_case = CompareSegmenters(
-        segmenters=built, source=source, reader=ImageFileMaskReader(), gt_reader=ImageFileGroundTruthReader(),
+        segmenters=built,
+        source=source,
+        reader=ImageFileMaskReader(),
+        gt_reader=ImageFileGroundTruthReader(),
         method_sinks={} if args.no_labels else {m: LabelTiffSink(os.path.join(out_dir, m)) for m in methods},
         comparison_sink=SideBySideSink(os.path.join(out_dir, "side_by_side"), panel_size=args.panel_size),
         report=ComparisonCsvReport(out_dir),
         progress=ConsoleComparison(header=header + f"\noutput      {out_dir}"),
-        setup_seconds=setup, iou_threshold=args.iou,
-        pairs=PairSampling(n_pairs=args.pairs, radius=args.pair_radius, seed=args.seed), warmup=args.warmup)
+        setup_seconds=setup,
+        iou_threshold=args.iou,
+        pairs=PairSampling(n_pairs=args.pairs, radius=args.pair_radius, seed=args.seed),
+        warmup=args.warmup,
+    )
     items, _ = use_case.run()
     if not items:
         print("no images found", file=sys.stderr)
@@ -190,48 +273,87 @@ def run_compare(args) -> int:
     return 0 if any(o.status is Status.OK for it in items for o in it.outcomes.values()) else 1
 
 
-def _sinks(out_dir: Optional[str], preview: bool, preview_dir: Optional[str], save_raw: bool):
-    sinks = []
+def _sinks(
+    out_dir: str | None, preview: bool, preview_dir: str | None, save_raw: bool, overlay: bool = False
+) -> ResultSink:
+    sinks: list[ResultSink] = []
     if out_dir:
         sinks.append(LabelTiffSink(out_dir))
         if preview:
-            sinks.append(PreviewSink(out_dir, "_preview.png"))
+            sinks.append(PreviewSink(out_dir, "_preview.png", overlay=overlay))
         if save_raw:
             sinks.append(ArtifactSink(out_dir))
     if preview_dir:
-        sinks.append(PreviewSink(preview_dir, ".png"))
+        sinks.append(PreviewSink(preview_dir, ".png", overlay=overlay))
     return CompositeSink(sinks) if sinks else NullSink()
 
 
 # ───────────────────────────────────────────── semantic segmentation ──
 
-def build_semantic_parser(method: Optional[str] = None, instance: Optional[str] = None) -> argparse.ArgumentParser:
+
+def build_semantic_parser(method: str | None = None, instance: str | None = None) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="memseg semantic", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        prog="memseg semantic",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description="Segment micrographs into membrane masks with a semantic method, optionally split each "
-                    "mask into instances with an instance method, and score masks against ground truth.")
+        "mask into instances with an instance method, and score masks against ground truth.",
+    )
     p.add_argument("inputs", nargs="+", help="micrograph files or folders (searched recursively)")
-    p.add_argument("--output_dir", "-o", required=True,
-                   help="<name>_mask.tif (+ _prob.tif, _mask.png), instances/<name>.tif, summary.csv here")
-    p.add_argument("--method", "-m", default=DEFAULT_SEMANTIC_METHOD, choices=semantic.available(),
-                   help="semantic segmentation method")
+    p.add_argument(
+        "--output_dir",
+        "-o",
+        required=True,
+        help="<name>_mask.tif (+ _prob.tif, _mask.png), instances/<name>.tif, summary.csv here",
+    )
+    p.add_argument(
+        "--method",
+        "-m",
+        default=DEFAULT_SEMANTIC_METHOD,
+        choices=semantic.available(),
+        help="semantic segmentation method",
+    )
     p.add_argument("--config", default=None, help="JSON file with semantic method parameters")
-    p.add_argument("--set", action="append", metavar="KEY=VALUE", default=[],
-                   help="override one semantic method parameter (repeatable)")
-    p.add_argument("--instance", default=None, choices=segmenters.available(),
-                   help="instance method applied to each mask")
+    p.add_argument(
+        "--set",
+        action="append",
+        metavar="KEY=VALUE",
+        default=[],
+        help="override one semantic method parameter (repeatable)",
+    )
+    p.add_argument(
+        "--instance", default=None, choices=segmenters.available(), help="instance method applied to each mask"
+    )
     p.add_argument("--instance_config", default=None, help="JSON file with instance method parameters")
-    p.add_argument("--instance_set", action="append", metavar="KEY=VALUE", default=[],
-                   help="override one instance method parameter (repeatable)")
-    p.add_argument("--gt_dir", default=None,
-                   help="ground-truth membrane masks (same relative names, any image extension): "
-                        "report pixel IoU / Dice")
-    p.add_argument("--pixel_size", type=float, default=None,
-                   help="pixel size (A/px) when the file does not provide one (MRC header)")
+    p.add_argument(
+        "--instance_set",
+        action="append",
+        metavar="KEY=VALUE",
+        default=[],
+        help="override one instance method parameter (repeatable)",
+    )
+    p.add_argument(
+        "--gt_dir",
+        default=None,
+        help="ground-truth membrane masks (same relative names, any image extension): report pixel IoU / Dice",
+    )
+    p.add_argument(
+        "--pixel_size",
+        type=float,
+        default=None,
+        help="pixel size (A/px) when the file does not provide one (MRC header)",
+    )
     p.add_argument("--no_header_pixel_size", action="store_true", help="ignore MRC header pixel sizes")
     p.add_argument("--save_prob", action="store_true", help="also write <name>_prob.tif when the method gives one")
-    p.add_argument("--preview", action="store_true",
-                   help="also write <name>_mask.png and, with --instance, instances/<name>_preview.png")
+    p.add_argument(
+        "--preview",
+        action="store_true",
+        help="also write <name>_mask.png and, with --instance, instances/<name>_preview.png",
+    )
+    p.add_argument(
+        "--preview_overlay",
+        action="store_true",
+        help="draw the instance method's overlay (e.g. skeleton, junctions) on instance previews",
+    )
     p.add_argument("--overwrite", action="store_true", help="recompute images whose mask exists")
     p.add_argument("--ext", default=",".join(MICROGRAPH_EXTS), help="comma-separated input extensions")
     p.add_argument("--no_recursive", action="store_true", help="do not descend into sub-folders")
@@ -245,7 +367,7 @@ def build_semantic_parser(method: Optional[str] = None, instance: Optional[str] 
         try:
             segmenters.get_plugin(instance).add_arguments(group)
         except argparse.ArgumentError as e:
-            raise SystemExit(f"options of {method!r} and {instance!r} clash: {e}")
+            raise SystemExit(f"options of {method!r} and {instance!r} clash: {e}") from e
     return p
 
 
@@ -255,41 +377,56 @@ def run_semantic(argv: Sequence[str]) -> int:
     pre.add_argument("--instance", default=None)
     known, _ = pre.parse_known_args(argv)
     if known.method not in semantic.available():
-        print(f"unknown semantic method {known.method!r}; available: {', '.join(semantic.available())}",
-              file=sys.stderr)
+        print(
+            f"unknown semantic method {known.method!r}; available: {', '.join(semantic.available())}", file=sys.stderr
+        )
         return 2
     if known.instance is not None and known.instance not in segmenters.available():
-        print(f"unknown instance method {known.instance!r}; available: {', '.join(segmenters.available())}",
-              file=sys.stderr)
+        print(
+            f"unknown instance method {known.instance!r}; available: {', '.join(segmenters.available())}",
+            file=sys.stderr,
+        )
         return 2
     args = build_semantic_parser(known.method, known.instance).parse_args(argv)
 
     sem = semantic.get_plugin(args.method).build(args, load_overrides(args.config, args.set))
     inst = None
     if args.instance:
-        inst = segmenters.get_plugin(args.instance).build(args, load_overrides(args.instance_config,
-                                                                                 args.instance_set))
+        inst = segmenters.get_plugin(args.instance).build(args, load_overrides(args.instance_config, args.instance_set))
     out_dir = os.path.abspath(args.output_dir)
     inst_dir = os.path.join(out_dir, "instances")
     exts = [x.strip() for x in args.ext.split(",") if x.strip()]
-    source = FolderImageSource(args.inputs, exts, recursive=not args.no_recursive, exclude_dirs=[out_dir],
-                               sample=args.sample, seed=args.seed, limit=args.limit, gt_dir=args.gt_dir)
-    sem_sinks = [SemanticMaskSink(out_dir, probability=args.save_prob)]
+    source = FolderImageSource(
+        args.inputs,
+        exts,
+        recursive=not args.no_recursive,
+        exclude_dirs=[out_dir],
+        sample=args.sample,
+        seed=args.seed,
+        limit=args.limit,
+        gt_dir=args.gt_dir,
+    )
+    sem_sinks: list[SemanticSink] = [SemanticMaskSink(out_dir, probability=args.save_prob)]
     if args.preview:
         sem_sinks.append(SemanticPreviewSink(out_dir))
-    inst_sinks = [LabelTiffSink(inst_dir)] + ([PreviewSink(inst_dir)] if args.preview else [])
+    inst_sinks: list[ResultSink] = [LabelTiffSink(inst_dir)] + (
+        [PreviewSink(inst_dir, overlay=args.preview_overlay)] if args.preview else []
+    )
     header = f"semantic    {sem.describe()}"
     if inst is not None:
         header += f"\ninstance    {inst.describe()}"
     use_case = SegmentMicrographs(
-        semantic=sem, source=source,
+        semantic=sem,
+        source=source,
         reader=MicrographFileReader(args.pixel_size, use_header=not args.no_header_pixel_size),
-        instance=inst, semantic_sink=CompositeSink(sem_sinks),
+        instance=inst,
+        semantic_sink=CompositeSink(sem_sinks),
         instance_sink=CompositeSink(inst_sinks) if inst is not None else NullSink(),
         gt_reader=ImageFileGroundTruthMaskReader() if args.gt_dir else None,
         report=CsvReportWriter(out_dir),
         progress=ConsoleMicrographProgress(header=header + f"\noutput      {out_dir}"),
-        skip_existing=not args.overwrite)
+        skip_existing=not args.overwrite,
+    )
     outcomes, _ = use_case.run()
     if not outcomes:
         print("no images found", file=sys.stderr)
@@ -299,7 +436,7 @@ def run_semantic(argv: Sequence[str]) -> int:
     return 0 if ok or skipped == len(outcomes) else 1
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "methods":
         print("instance methods (mask -> instances; segment / evaluate / compare / semantic --instance):")
@@ -331,23 +468,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report = CsvReportWriter(out_dir) if out_dir else None
     progress = ConsoleProgress(header=f"method      {segmenter.describe()}\noutput      {out_dir or '(none)'}")
 
+    source: ImageSource
     if args.command == "segment":
         for inp in args.inputs:
             if out_dir and os.path.isdir(inp) and os.path.abspath(inp) == out_dir:
                 print("--output_dir must differ from the input folder", file=sys.stderr)
                 return 2
         exts = [x.strip() for x in args.ext.split(",") if x.strip()]
-        source = FolderImageSource(args.inputs, exts, recursive=not args.no_recursive,
-                                   exclude_dirs=[d for d in (out_dir, args.preview_dir) if d],
-                                   sample=args.sample, seed=args.seed, limit=args.limit)
-        outcomes = SegmentImages(segmenter, source, reader,
-                                 sink=_sinks(out_dir, args.preview, args.preview_dir, args.save_raw),
-                                 report=report, progress=progress, skip_existing=not args.overwrite).run()
+        source = FolderImageSource(
+            args.inputs,
+            exts,
+            recursive=not args.no_recursive,
+            exclude_dirs=[d for d in (out_dir, args.preview_dir) if d],
+            sample=args.sample,
+            seed=args.seed,
+            limit=args.limit,
+        )
+        outcomes = SegmentImages(
+            segmenter,
+            source,
+            reader,
+            sink=_sinks(out_dir, args.preview, args.preview_dir, args.save_raw, args.preview_overlay),
+            report=report,
+            progress=progress,
+            skip_existing=not args.overwrite,
+        ).run()
     else:
         source = LabelledDatasetSource(args.datasets, sample=args.sample, seed=args.seed, limit=args.limit)
-        outcomes, _ = EvaluateSegmenter(segmenter, source, reader, ImageFileGroundTruthReader(),
-                                        sink=_sinks(out_dir, False, args.preview_dir, False),
-                                        report=report, progress=progress, iou_threshold=args.iou).run()
+        outcomes, _ = EvaluateSegmenter(
+            segmenter,
+            source,
+            reader,
+            ImageFileGroundTruthReader(),
+            sink=_sinks(out_dir, False, args.preview_dir, False, args.preview_overlay),
+            report=report,
+            progress=progress,
+            iou_threshold=args.iou,
+        ).run()
 
     if not outcomes:
         print("no images found", file=sys.stderr)

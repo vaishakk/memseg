@@ -13,8 +13,10 @@ from ..domain.ports import GroundTruthReader, MaskReader
 def read_image(path: str) -> np.ndarray:
     if path.lower().endswith((".tif", ".tiff")):
         import tifffile
+
         return np.asarray(tifffile.imread(path))
     from PIL import Image
+
     return np.asarray(Image.open(path))
 
 
@@ -31,6 +33,7 @@ def to_binary(arr: np.ndarray) -> np.ndarray:
 
 def write_labels(path: str, labels: InstanceLabels) -> None:
     import tifffile
+
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     a = labels.data
     dtype = np.uint16 if a.max(initial=0) <= np.iinfo(np.uint16).max else np.uint32

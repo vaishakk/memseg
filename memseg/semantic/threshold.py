@@ -24,14 +24,14 @@ from .base import SemanticSegmenterPlugin
 
 @dataclass
 class ThresholdConfig:
-    background_sigma: float = 50.0   # px; blur used as the background estimate
-    smooth_sigma: float = 8.0        # px; noise suppression before thresholding
-    k: float = 0.75                  # threshold in robust standard deviations
-    polarity: int = -1               # -1: membranes darker than background, +1: brighter
-    min_area: int = 2000             # px; drop smaller connected pieces
+    background_sigma: float = 50.0  # px; blur used as the background estimate
+    smooth_sigma: float = 8.0  # px; noise suppression before thresholding
+    k: float = 0.75  # threshold in robust standard deviations
+    polarity: int = -1  # -1: membranes darker than background, +1: brighter
+    min_area: int = 2000  # px; drop smaller connected pieces
 
     @classmethod
-    def from_overrides(cls, overrides: dict[str, Any]) -> "ThresholdConfig":
+    def from_overrides(cls, overrides: dict[str, Any]) -> ThresholdConfig:
         names = {f.name for f in fields(cls)}
         unknown = set(overrides) - names
         if unknown:
@@ -79,8 +79,9 @@ class ThresholdSegmenter(SemanticSegmenter):
             keep[0] = False
             mask = keep[lab]
         prob = (1.0 / (1.0 + np.exp(-(score - c.k)))).astype(np.float32)
-        return SemanticResult(mask=MembraneMask(mask, image.ref), method=self.name, probability=prob,
-                              info=dict(pieces=int(n)))
+        return SemanticResult(
+            mask=MembraneMask(mask, image.ref), method=self.name, probability=prob, info=dict(pieces=int(n))
+        )
 
 
 class ThresholdPlugin(SemanticSegmenterPlugin):

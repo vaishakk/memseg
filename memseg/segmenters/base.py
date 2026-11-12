@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any
 
 from ..domain.ports import InstanceSegmenter
 
@@ -36,7 +36,7 @@ def parse_value(text: str) -> Any:
         return text
 
 
-def load_overrides(config_path: Optional[str], pairs: Optional[list[str]]) -> dict[str, Any]:
+def load_overrides(config_path: str | None, pairs: list[str] | None) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if config_path:
         with open(config_path) as f:

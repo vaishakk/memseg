@@ -11,16 +11,29 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memseg import registry, semantic  # noqa: E402
-from memseg.application import SegmentMicrographs  # noqa: E402
-from memseg.cli import main  # noqa: E402
-from memseg.domain import (GroundTruthMaskReader, ImageRef, ImageSource, MembraneMask, Micrograph,  # noqa: E402
-                           MicrographReader, PixelScores, ResultSink, SemanticResult, SemanticSegmenter,
-                           SemanticSink, Status, pixel_scores, summarize_semantic)
-from memseg.io import MicrographFileReader  # noqa: E402
-from memseg.segmenters.components import ConnectedComponentsSegmenter  # noqa: E402
-from memseg.semantic.base import SemanticSegmenterPlugin  # noqa: E402
-from memseg.semantic.threshold import ThresholdConfig, ThresholdSegmenter  # noqa: E402
+from memseg import registry, semantic
+from memseg.application import SegmentMicrographs
+from memseg.cli import main
+from memseg.domain import (
+    GroundTruthMaskReader,
+    ImageRef,
+    ImageSource,
+    MembraneMask,
+    Micrograph,
+    MicrographReader,
+    PixelScores,
+    ResultSink,
+    SemanticResult,
+    SemanticSegmenter,
+    SemanticSink,
+    Status,
+    pixel_scores,
+    summarize_semantic,
+)
+from memseg.io import MicrographFileReader
+from memseg.segmenters.components import ConnectedComponentsSegmenter
+from memseg.semantic.base import SemanticSegmenterPlugin
+from memseg.semantic.threshold import ThresholdConfig, ThresholdSegmenter
 
 
 def rings_micrograph(seed=0, noise=0.3):
@@ -36,12 +49,13 @@ def rings_micrograph(seed=0, noise=0.3):
 
 # ───────────────────────── metrics ──
 
+
 def test_pixel_scores_and_pooling():
     gt = np.zeros((4, 4), bool)
-    gt[0, :] = True                     # 4 px
+    gt[0, :] = True  # 4 px
     pred = np.zeros((4, 4), bool)
-    pred[0, :2] = True                  # 2 tp
-    pred[3, 0] = True                   # 1 fp
+    pred[0, :2] = True  # 2 tp
+    pred[3, 0] = True  # 1 fp
     s = pixel_scores(MembraneMask(gt), MembraneMask(pred))
     assert (s.tp, s.fp, s.fn, s.tn) == (2, 1, 2, 11)
     assert s.iou == pytest.approx(2 / 5)
@@ -58,6 +72,7 @@ def test_pixel_scores_shape_mismatch():
 
 # ───────────────────────── use case with fakes ──
 
+
 class Images(ImageSource, MicrographReader, GroundTruthMaskReader):
     """In-memory micrographs and GT masks; doubles as source and readers."""
 
@@ -68,7 +83,7 @@ class Images(ImageSource, MicrographReader, GroundTruthMaskReader):
         return iter(ImageRef(k, k, k if gt is not None else None) for k, (_, gt) in self.items.items())
 
     def read(self, ref):
-        img, gt = self.items[ref.key]
+        img, _gt = self.items[ref.key]
         return Micrograph(img, ref, pixel_size=2.0)
 
 
@@ -112,14 +127,20 @@ def test_segment_micrographs_runs_semantic_then_instance_and_scores():
     oracle = Oracle({"a": mask, "b": mask, "c": RuntimeError("boom"), "d": bad})
     sem_sink, inst_sink = Memo(), Memo()
     outcomes, summary = SegmentMicrographs(
-        semantic=oracle, source=images, reader=images, instance=ConnectedComponentsSegmenter(min_size=10),
-        semantic_sink=sem_sink, instance_sink=inst_sink, gt_reader=GT(images)).run()
+        semantic=oracle,
+        source=images,
+        reader=images,
+        instance=ConnectedComponentsSegmenter(min_size=10),
+        semantic_sink=sem_sink,
+        instance_sink=inst_sink,
+        gt_reader=GT(images),
+    ).run()
 
     st = {o.ref.key: o.status for o in outcomes}
     assert st == {"a": Status.OK, "b": Status.OK, "c": Status.FAILED, "d": Status.FAILED}
-    assert "boom" in outcomes[2].error and "mask for a" in outcomes[3].error   # wrong-shape mask rejected
+    assert "boom" in outcomes[2].error and "mask for a" in outcomes[3].error  # wrong-shape mask rejected
     a, b = outcomes[0], outcomes[1]
-    assert a.instances.labels.n_instances == 2                  # the two rings
+    assert a.instances.labels.n_instances == 2  # the two rings
     assert a.scores.iou == pytest.approx(1.0) and b.scores is None  # b has no GT
     assert summary.n_images == 1 and summary.pooled.iou == pytest.approx(1.0)
     assert set(sem_sink.saved) == {"a", "b"} and set(inst_sink.saved) == {"a", "b"}
@@ -138,6 +159,7 @@ def test_segment_micrographs_without_instance_or_gt():
 
 # ───────────────────────── reference method ──
 
+
 def test_threshold_finds_dark_rings():
     img, mask = rings_micrograph()
     res = ThresholdSegmenter(ThresholdConfig(k=4, smooth_sigma=1, min_area=50)).segment(Micrograph(img))
@@ -154,10 +176,11 @@ def test_threshold_rejects_unknown_parameter():
 
 # ───────────────────────── file adapters + CLI ──
 
+
 def test_mrc_reader_pixel_size(tmp_path):
     mrcfile = pytest.importorskip("mrcfile")
     img, _ = rings_micrograph()
-    for apix, expected in ((1.7, 1.7), (1.0, 2.7)):   # 1.0 = "unset" -> default
+    for apix, expected in ((1.7, 1.7), (1.0, 2.7)):  # 1.0 = "unset" -> default
         p = str(tmp_path / f"m_{apix}.mrc")
         with mrcfile.new(p) as m:
             m.set_data(img)
@@ -169,18 +192,45 @@ def test_mrc_reader_pixel_size(tmp_path):
 
 def test_cli_semantic_end_to_end(tmp_path, capsys):
     import tifffile
+
     img, mask = rings_micrograph()
     (tmp_path / "in").mkdir()
     (tmp_path / "gt").mkdir()
     tifffile.imwrite(tmp_path / "in" / "mic.tif", img)
     tifffile.imwrite(tmp_path / "gt" / "mic.tif", mask.astype(np.uint8))
     out = tmp_path / "out"
-    rc = main(["semantic", str(tmp_path / "in"), "-o", str(out), "--set", "k=4", "--set", "smooth_sigma=1", "--set", "min_area=50",
-               "--instance", "components", "--instance_set", "min_size=50", "--gt_dir", str(tmp_path / "gt"),
-               "--save_prob", "--preview"])
+    rc = main(
+        [
+            "semantic",
+            str(tmp_path / "in"),
+            "-o",
+            str(out),
+            "--set",
+            "k=4",
+            "--set",
+            "smooth_sigma=1",
+            "--set",
+            "min_area=50",
+            "--instance",
+            "components",
+            "--instance_set",
+            "min_size=50",
+            "--gt_dir",
+            str(tmp_path / "gt"),
+            "--save_prob",
+            "--preview",
+        ]
+    )
     assert rc == 0
-    for f in ("mic_mask.tif", "mic_prob.tif", "mic_mask.png", "instances/mic.tif", "instances/mic_preview.png",
-              "summary.csv", "summary.json"):
+    for f in (
+        "mic_mask.tif",
+        "mic_prob.tif",
+        "mic_mask.png",
+        "instances/mic.tif",
+        "instances/mic_preview.png",
+        "summary.csv",
+        "summary.json",
+    ):
         assert (out / f).is_file(), f
     assert tifffile.imread(out / "instances" / "mic.tif").max() == 2
     assert json.loads((out / "summary.json").read_text())["iou"] > 0.85
@@ -196,6 +246,7 @@ def test_cli_semantic_unknown_methods(capsys):
 
 
 # ───────────────────────── plugins ──
+
 
 class _FakeSemanticPlugin(SemanticSegmenterPlugin):
     name = "fakesem"

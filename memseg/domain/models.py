@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any
 
 import numpy as np
 
@@ -20,7 +21,7 @@ class ImageRef:
 
     path: str
     key: str
-    gt_path: Optional[str] = None
+    gt_path: str | None = None
 
 
 @dataclass
@@ -28,7 +29,7 @@ class MembraneMask:
     """Binary membrane mask: True on membrane pixels."""
 
     data: np.ndarray
-    ref: Optional[ImageRef] = None
+    ref: ImageRef | None = None
 
     def __post_init__(self):
         a = np.asarray(self.data)
@@ -38,7 +39,7 @@ class MembraneMask:
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self.data.shape  # type: ignore[return-value]
+        return self.data.shape
 
     @property
     def height(self) -> int:
@@ -66,7 +67,7 @@ class InstanceLabels:
         return int(self.data.max()) if self.data.size else 0
 
     @classmethod
-    def consecutive(cls, data: np.ndarray) -> "InstanceLabels":
+    def consecutive(cls, data: np.ndarray) -> InstanceLabels:
         """Relabel any integer map to consecutive ids 1..N (negative/zero -> background)."""
         a = np.asarray(data).astype(np.int64)
         a[a < 0] = 0
@@ -81,8 +82,8 @@ class InstanceLabels:
 class Overlay:
     """Optional visual diagnostics a method can attach (drawn on previews)."""
 
-    skeleton: Optional[np.ndarray] = None   # bool (H, W)
-    junctions: Optional[np.ndarray] = None  # bool (H, W)
+    skeleton: np.ndarray | None = None  # bool (H, W)
+    junctions: np.ndarray | None = None  # bool (H, W)
     thickness: float = 0.0
 
 
@@ -99,7 +100,7 @@ class SegmentationResult:
     method: str
     info: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, np.ndarray] = field(default_factory=dict)
-    overlay: Optional[Overlay] = None
+    overlay: Overlay | None = None
 
 
 @dataclass(frozen=True)
@@ -120,11 +121,16 @@ class EvaluationSummary:
     f1: float
     mean_matched_iou: float
     n_images: int
-    recall_touching: Optional[float] = None
+    recall_touching: float | None = None
 
     def as_dict(self) -> dict[str, float]:
-        d = dict(precision=self.precision, recall=self.recall, f1=self.f1,
-                 mean_matched_iou=self.mean_matched_iou, n_images=self.n_images)
+        d = dict(
+            precision=self.precision,
+            recall=self.recall,
+            f1=self.f1,
+            mean_matched_iou=self.mean_matched_iou,
+            n_images=self.n_images,
+        )
         if self.recall_touching is not None:
             d["recall_touching"] = self.recall_touching
         return d
@@ -143,10 +149,10 @@ class ItemOutcome:
     ref: ImageRef
     status: Status
     seconds: float = 0.0
-    shape: Optional[tuple[int, int]] = None
-    result: Optional[SegmentationResult] = None
-    match: Optional[MatchResult] = None
-    error: Optional[str] = None
+    shape: tuple[int, int] | None = None
+    result: SegmentationResult | None = None
+    match: MatchResult | None = None
+    error: str | None = None
 
     def report_row(self) -> Mapping[str, Any]:
         row: dict[str, Any] = dict(image=self.ref.key, status=self.status.value)
@@ -166,6 +172,7 @@ class ItemOutcome:
 
 # ───────────────────────────────────────────── method comparison ──
 
+
 @dataclass(frozen=True)
 class PairCounts:
     """Same-instance decisions on sampled pairs of ground-truth membrane pixels.
@@ -180,11 +187,11 @@ class PairCounts:
     fp: int = 0  # different in GT, merged by prediction
     tn: int = 0  # different in GT, kept apart
 
-    def __add__(self, o: "PairCounts") -> "PairCounts":
+    def __add__(self, o: PairCounts) -> PairCounts:
         return PairCounts(self.tp + o.tp, self.fn + o.fn, self.fp + o.fp, self.tn + o.tn)
 
     @property
-    def auroc(self) -> Optional[float]:
+    def auroc(self) -> float | None:
         """ROC AUC of the binary same-instance score (= balanced accuracy for hard labels).
         None if the pairs contain only one class."""
         pos, neg = self.tp + self.fn, self.fp + self.tn
@@ -200,13 +207,13 @@ class MethodOutcome:
     method: str
     status: Status
     seconds: float = 0.0
-    result: Optional[SegmentationResult] = None
-    match: Optional[MatchResult] = None
-    pairs: Optional[PairCounts] = None
-    error: Optional[str] = None
+    result: SegmentationResult | None = None
+    match: MatchResult | None = None
+    pairs: PairCounts | None = None
+    error: str | None = None
 
     @property
-    def f1(self) -> Optional[float]:
+    def f1(self) -> float | None:
         if self.match is None:
             return None
         m = self.match
@@ -219,11 +226,11 @@ class ComparisonItem:
     """All methods on one image."""
 
     ref: ImageRef
-    shape: Optional[tuple[int, int]] = None
+    shape: tuple[int, int] | None = None
     has_gt: bool = False
-    n_gt: Optional[int] = None
+    n_gt: int | None = None
     outcomes: dict[str, MethodOutcome] = field(default_factory=dict)
-    error: Optional[str] = None  # reading the image / ground truth failed
+    error: str | None = None  # reading the image / ground truth failed
 
 
 @dataclass
@@ -236,11 +243,11 @@ class MethodSummary:
     total_seconds: float
     mean_seconds: float
     total_instances: int
-    evaluation: Optional[EvaluationSummary] = None
-    pairs: Optional[PairCounts] = None
+    evaluation: EvaluationSummary | None = None
+    pairs: PairCounts | None = None
 
     @property
-    def pair_auroc(self) -> Optional[float]:
+    def pair_auroc(self) -> float | None:
         return self.pairs.auroc if self.pairs is not None else None
 
 
@@ -253,6 +260,7 @@ class ComparisonSummary:
 
 # ───────────────────────────────────────────── semantic segmentation ──
 
+
 @dataclass
 class Micrograph:
     """A raw 2-D image (e.g. a cryo-EM micrograph) to be segmented into membrane / background.
@@ -261,8 +269,8 @@ class Micrograph:
     """
 
     data: np.ndarray
-    ref: Optional[ImageRef] = None
-    pixel_size: Optional[float] = None
+    ref: ImageRef | None = None
+    pixel_size: float | None = None
 
     def __post_init__(self):
         a = np.squeeze(np.asarray(self.data))
@@ -272,7 +280,7 @@ class Micrograph:
 
     @property
     def shape(self) -> tuple[int, int]:
-        return self.data.shape  # type: ignore[return-value]
+        return self.data.shape
 
 
 @dataclass
@@ -287,7 +295,7 @@ class SemanticResult:
 
     mask: MembraneMask
     method: str
-    probability: Optional[np.ndarray] = None
+    probability: np.ndarray | None = None
     info: dict[str, Any] = field(default_factory=dict)
     artifacts: dict[str, np.ndarray] = field(default_factory=dict)
 
@@ -306,7 +314,7 @@ class PixelScores:
     fn: int = 0
     tn: int = 0
 
-    def __add__(self, o: "PixelScores") -> "PixelScores":
+    def __add__(self, o: PixelScores) -> PixelScores:
         return PixelScores(self.tp + o.tp, self.fp + o.fp, self.fn + o.fn, self.tn + o.tn)
 
     @property
@@ -336,8 +344,14 @@ class SemanticSummary:
 
     def as_dict(self) -> dict[str, float]:
         p = self.pooled
-        return dict(iou=p.iou, dice=p.dice, precision=p.precision, recall=p.recall,
-                    mean_image_iou=self.mean_iou, n_images=self.n_images)
+        return dict(
+            iou=p.iou,
+            dice=p.dice,
+            precision=p.precision,
+            recall=p.recall,
+            mean_image_iou=self.mean_iou,
+            n_images=self.n_images,
+        )
 
 
 @dataclass
@@ -347,11 +361,11 @@ class MicrographOutcome:
     ref: ImageRef
     status: Status
     seconds: float = 0.0
-    shape: Optional[tuple[int, int]] = None
-    semantic: Optional[SemanticResult] = None
-    instances: Optional[SegmentationResult] = None
-    scores: Optional[PixelScores] = None
-    error: Optional[str] = None
+    shape: tuple[int, int] | None = None
+    semantic: SemanticResult | None = None
+    instances: SegmentationResult | None = None
+    scores: PixelScores | None = None
+    error: str | None = None
 
     def report_row(self) -> Mapping[str, Any]:
         row: dict[str, Any] = dict(image=self.ref.key, status=self.status.value)

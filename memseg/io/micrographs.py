@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Optional, Sequence, TextIO
+from collections.abc import Sequence
+from typing import TextIO
 
 import numpy as np
 
-from ..domain.models import ImageRef, MembraneMask, Micrograph, MicrographOutcome, SemanticResult, SemanticSummary, Status
+from ..domain.models import (
+    ImageRef,
+    MembraneMask,
+    Micrograph,
+    MicrographOutcome,
+    SemanticResult,
+    SemanticSummary,
+    Status,
+)
 from ..domain.ports import GroundTruthMaskReader, MicrographListener, MicrographReader, SemanticSink
 from .images import read_image, to_binary
 
@@ -24,7 +33,7 @@ def _mrcfile():
     return mrcfile
 
 
-def header_pixel_size(path: str) -> Optional[float]:
+def header_pixel_size(path: str) -> float | None:
     """Pixel size (Å/px) from an MRC header, or None when absent or unset.
 
     0 means "not set"; 1.0 is what many programs write when they don't know it, so it is
@@ -66,7 +75,7 @@ class MicrographFileReader(MicrographReader):
     """Reads micrographs; the pixel size comes from the MRC header (if `use_header` and set),
     else `default_pixel_size` (may be None)."""
 
-    def __init__(self, default_pixel_size: Optional[float] = None, use_header: bool = True):
+    def __init__(self, default_pixel_size: float | None = None, use_header: bool = True):
         self.default_pixel_size, self.use_header = default_pixel_size, use_header
 
     def read(self, ref: ImageRef) -> Micrograph:
@@ -100,12 +109,16 @@ class SemanticMaskSink(SemanticSink):
 
     def save(self, ref: ImageRef, result: SemanticResult) -> None:
         import tifffile
+
         p = self.path(ref)
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         tifffile.imwrite(p, result.mask.data.astype(np.uint8) * 255, compression="zlib")
         if self.probability and result.probability is not None:
-            tifffile.imwrite(_out_path(self.out_dir, ref, "_prob.tif"),
-                             np.asarray(result.probability, np.float32), compression="zlib")
+            tifffile.imwrite(
+                _out_path(self.out_dir, ref, "_prob.tif"),
+                np.asarray(result.probability, np.float32),
+                compression="zlib",
+            )
 
 
 class SemanticPreviewSink(SemanticSink):
@@ -119,7 +132,9 @@ class SemanticPreviewSink(SemanticSink):
 
     def save(self, ref: ImageRef, result: SemanticResult) -> None:
         from PIL import Image
+
         from .previews import render
+
         p = _out_path(self.out_dir, ref, self.suffix)
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         Image.fromarray(render(result.mask.data.astype(np.int32), max_size=self.max_size, mono=True)).save(p)
@@ -130,8 +145,8 @@ def _fmt(v) -> str:
 
 
 class ConsoleMicrographProgress(MicrographListener):
-    def __init__(self, stream: Optional[TextIO] = None, header: str = ""):
-        self.stream, self.header = stream, header   # None: the current sys.stdout
+    def __init__(self, stream: TextIO | None = None, header: str = ""):
+        self.stream, self.header = stream, header  # None: the current sys.stdout
 
     def _p(self, s: str) -> None:
         print(s, file=self.stream or sys.stdout, flush=True)
@@ -152,6 +167,7 @@ class ConsoleMicrographProgress(MicrographListener):
             self._p(f"{head} FAILED  {o.error}")
             return
         s = o.semantic
+        assert s is not None and o.shape is not None  # OK outcomes carry a result
         line = f"{head} {o.shape[1]}x{o.shape[0]}  membrane {100 * float(s.mask.data.mean()):.2f}%"
         if s.info:
             line += "  " + "  ".join(f"{k} {_fmt(v)}" for k, v in s.info.items())
@@ -161,13 +177,23 @@ class ConsoleMicrographProgress(MicrographListener):
             line += f"  IoU {o.scores.iou:.3f}  Dice {o.scores.dice:.3f}"
         self._p(line + f"  {o.seconds:.1f}s")
 
-    def finished(self, outcomes: Sequence[MicrographOutcome], summary: Optional[SemanticSummary]) -> None:
+    def finished(self, outcomes: Sequence[MicrographOutcome], summary: SemanticSummary | None) -> None:
         n = {s: sum(o.status is s for o in outcomes) for s in Status}
         self._p(f"done: {n[Status.OK]} ok, {n[Status.FAILED]} failed, {n[Status.SKIPPED]} skipped")
         if summary is not None:
-            self._p("OVERALL: " + json.dumps({k: round(v, 4) if isinstance(v, float) else v
-                                              for k, v in summary.as_dict().items()}))
+            self._p(
+                "OVERALL: "
+                + json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in summary.as_dict().items()})
+            )
 
 
-__all__ = ["MICROGRAPH_EXTS", "ConsoleMicrographProgress", "ImageFileGroundTruthMaskReader", "MicrographFileReader",
-           "SemanticMaskSink", "SemanticPreviewSink", "header_pixel_size", "read_micrograph"]
+__all__ = [
+    "MICROGRAPH_EXTS",
+    "ConsoleMicrographProgress",
+    "ImageFileGroundTruthMaskReader",
+    "MicrographFileReader",
+    "SemanticMaskSink",
+    "SemanticPreviewSink",
+    "header_pixel_size",
+    "read_micrograph",
+]

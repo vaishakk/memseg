@@ -1,11 +1,26 @@
 [project]
 name = "memseg"
-version = "0.1.0"
-description = "Membrane instance segmentation: turn binary membrane masks into per-membrane label maps"
+dynamic = ["version"]
+description = "Framework for cryo-EM membrane segmentation: pluggable semantic and instance methods, scoring and a CLI"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "Vaishak Karthikeyan" }]
+keywords = ["cryo-em", "electron-microscopy", "membrane", "segmentation", "instance-segmentation", "image-analysis"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Typing :: Typed",
+]
 dependencies = [
     "numpy>=2.0",
     "scipy>=1.13",
@@ -17,27 +32,73 @@ dependencies = [
 [project.optional-dependencies]
 # Reading .mrc micrographs (semantic segmentation).
 mrc = ["mrcfile>=1.5.4"]
-# Planned CryoSPARC integration (not used by the package yet).
-cryosparc = [
-    "cryosparc-tools>=5.0.3",
-    "mrcfile>=1.5.4",
-]
 
 [project.urls]
+Homepage = "https://github.com/vaishakk/memseg"
 Repository = "https://github.com/vaishakk/memseg"
+Documentation = "https://github.com/vaishakk/memseg/blob/main/architecture.md"
+Issues = "https://github.com/vaishakk/memseg/issues"
 
 [project.scripts]
 memseg = "memseg.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=8",
+    "ruff>=0.17.5",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "memseg/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["memseg"]
 
+[tool.hatch.build.targets.sdist]
+include = ["memseg", "tests", "README.md", "architecture.md", "LICENSE", "pyproject.toml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "SIM",      # simplify
+    "C4",       # comprehensions
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "C408",     # dict(a=1) calls are used on purpose for info/kwargs dicts
+    "RUF022",   # __all__ is grouped by topic, not sorted
+    "B024",     # listener ports are ABCs whose methods are optional no-op hooks
+    "B027",     # (same)
+    "UP042",    # Status(str, Enum): keep str() / formatting behaviour; StrEnum would change it
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]   # tests put the repo on sys.path before importing memseg
+
+[tool.mypy]
+python_version = "3.11"
+packages = ["memseg"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "skimage.*", "tifffile.*", "mrcfile.*"]
+ignore_missing_imports = true

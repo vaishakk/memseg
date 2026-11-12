@@ -7,13 +7,21 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from ..domain.metrics import pixel_scores, summarize_semantic
 from ..domain.models import ImageRef, MicrographOutcome, SemanticSummary, Status
-from ..domain.ports import (GroundTruthMaskReader, ImageSource, InstanceSegmenter, MicrographListener,
-                            MicrographReader, NullSink, ResultSink, SemanticReportWriter, SemanticSegmenter,
-                            SemanticSink)
+from ..domain.ports import (
+    GroundTruthMaskReader,
+    ImageSource,
+    InstanceSegmenter,
+    MicrographListener,
+    MicrographReader,
+    NullSink,
+    ResultSink,
+    SemanticReportWriter,
+    SemanticSegmenter,
+    SemanticSink,
+)
 
 
 def _describe_error(e: BaseException) -> str:
@@ -35,11 +43,11 @@ class SegmentMicrographs:
     semantic: SemanticSegmenter
     source: ImageSource
     reader: MicrographReader
-    instance: Optional[InstanceSegmenter] = None
-    semantic_sink: SemanticSink | ResultSink = field(default_factory=NullSink)
+    instance: InstanceSegmenter | None = None
+    semantic_sink: SemanticSink = field(default_factory=NullSink)
     instance_sink: ResultSink = field(default_factory=NullSink)
-    gt_reader: Optional[GroundTruthMaskReader] = None
-    report: Optional[SemanticReportWriter] = None
+    gt_reader: GroundTruthMaskReader | None = None
+    report: SemanticReportWriter | None = None
     progress: MicrographListener = field(default_factory=MicrographListener)
     skip_existing: bool = False
 
@@ -47,7 +55,7 @@ class SegmentMicrographs:
         d = self.semantic.describe()
         return d + (f" -> {self.instance.describe()}" if self.instance is not None else "")
 
-    def run(self) -> tuple[list[MicrographOutcome], Optional[SemanticSummary]]:
+    def run(self) -> tuple[list[MicrographOutcome], SemanticSummary | None]:
         refs = list(self.source)
         self.progress.start(len(refs), f"segment micrographs with {self.describe()}")
         outcomes = []
@@ -80,8 +88,14 @@ class SegmentMicrographs:
             scores = None
             if self.gt_reader is not None and ref.gt_path is not None:
                 scores = pixel_scores(self.gt_reader.read(ref), sem.mask)
-            return MicrographOutcome(ref=ref, status=Status.OK, seconds=time.time() - t0, shape=image.shape,
-                                     semantic=sem, instances=inst, scores=scores)
+            return MicrographOutcome(
+                ref=ref,
+                status=Status.OK,
+                seconds=time.time() - t0,
+                shape=image.shape,
+                semantic=sem,
+                instances=inst,
+                scores=scores,
+            )
         except Exception as e:  # keep going on bad inputs
-            return MicrographOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0,
-                                     error=_describe_error(e))
+            return MicrographOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0, error=_describe_error(e))

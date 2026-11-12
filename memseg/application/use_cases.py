@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 from ..domain.metrics import match_instances, summarize
 from ..domain.models import EvaluationSummary, ImageRef, ItemOutcome, Status
-from ..domain.ports import (GroundTruthReader, ImageSource, InstanceSegmenter, MaskReader, NullSink,
-                            ProgressListener, ReportWriter, ResultSink)
+from ..domain.ports import (
+    GroundTruthReader,
+    ImageSource,
+    InstanceSegmenter,
+    MaskReader,
+    NullSink,
+    ProgressListener,
+    ReportWriter,
+    ResultSink,
+)
 
 
 def _describe_error(e: BaseException) -> str:
@@ -27,7 +34,7 @@ class SegmentImages:
     source: ImageSource
     reader: MaskReader
     sink: ResultSink = field(default_factory=NullSink)
-    report: Optional[ReportWriter] = None
+    report: ReportWriter | None = None
     progress: ProgressListener = field(default_factory=ProgressListener)
     skip_existing: bool = True
 
@@ -52,8 +59,7 @@ class SegmentImages:
             mask = self.reader.read(ref)
             result = self.segmenter.segment(mask)
             self.sink.save(ref, result)
-            return ItemOutcome(ref=ref, status=Status.OK, seconds=time.time() - t0, shape=mask.shape,
-                               result=result)
+            return ItemOutcome(ref=ref, status=Status.OK, seconds=time.time() - t0, shape=mask.shape, result=result)
         except Exception as e:  # keep going on bad inputs
             return ItemOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0, error=_describe_error(e))
 
@@ -70,7 +76,7 @@ class EvaluateSegmenter:
     reader: MaskReader
     gt_reader: GroundTruthReader
     sink: ResultSink = field(default_factory=NullSink)
-    report: Optional[ReportWriter] = None
+    report: ReportWriter | None = None
     progress: ProgressListener = field(default_factory=ProgressListener)
     iou_threshold: float = 0.5
 
@@ -88,11 +94,11 @@ class EvaluateSegmenter:
                 result = self.segmenter.segment(mask)
                 self.sink.save(ref, result)
                 m = match_instances(gt, result.labels, self.iou_threshold)
-                outcome = ItemOutcome(ref=ref, status=Status.OK, seconds=time.time() - t0, shape=mask.shape,
-                                      result=result, match=m)
+                outcome = ItemOutcome(
+                    ref=ref, status=Status.OK, seconds=time.time() - t0, shape=mask.shape, result=result, match=m
+                )
             except Exception as e:
-                outcome = ItemOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0,
-                                      error=_describe_error(e))
+                outcome = ItemOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0, error=_describe_error(e))
             outcomes.append(outcome)
             self.progress.item_done(i, len(refs), outcome)
         summary = summarize([o.match for o in outcomes if o.match is not None])

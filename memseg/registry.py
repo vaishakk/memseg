@@ -19,12 +19,13 @@ from typing import Any
 class PluginRegistry:
     def __init__(self, group: str, builtins: dict[str, str], summaries: dict[str, str] | None = None):
         self.group = group
-        self.builtins = builtins          # mutable: REGISTRY[name] = "module:Class" registers at run time
+        self.builtins = builtins  # mutable: REGISTRY[name] = "module:Class" registers at run time
         self.summaries = summaries if summaries is not None else {}
 
     def _entry_points(self) -> dict[str, str]:
         # looked up through the module so tests can monkeypatch memseg.registry.entry_points
         from . import registry as _self
+
         return {ep.name: ep.value for ep in _self.entry_points(group=self.group)}
 
     def targets(self) -> dict[str, str]:

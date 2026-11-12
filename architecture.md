@@ -103,7 +103,7 @@ tests/test_semantic.py          pixel metrics, SegmentMicrographs with fakes, th
 | `ImageRef(path, key, gt_path)` | one input; `key` is the relative name outputs mirror (`sub/mask_01.tif` → `OUT/sub/mask_01.tif`) |
 | `MembraneMask(data, ref)` | 2-D bool mask, validated on construction |
 | `InstanceLabels(data)` | 2-D int32 map, 0 = background; `consecutive()` relabels to 1..N |
-| `SegmentationResult(labels, method, info, artifacts, overlay)` | method output. `info`: small scalars for logs/reports (e.g. `scale`, `junctions`); `artifacts`: large optional arrays (e.g. network outputs) for `--save_raw`; `overlay`: optional preview hints (skeleton, junctions) |
+| `SegmentationResult(labels, method, info, artifacts, overlay)` | method output. `info`: small scalars for logs/reports (e.g. `scale`, `junctions`); `artifacts`: large optional arrays (e.g. network outputs) for `--save_raw`; `overlay`: optional preview hints (skeleton, junctions), drawn only with `--preview_overlay` |
 | `MatchResult`, `EvaluationSummary` | per-image and overall precision / recall / F1 / matched IoU |
 | `PairCounts(tp, fn, fp, tn)` | same-instance decisions on sampled pixel pairs; additive over images; `.auroc` |
 | `MethodOutcome`, `ComparisonItem` | one method on one image (time, result, match, pairs) / all methods on one image |
@@ -200,7 +200,7 @@ sensitive to splits (a ring broken in two) and merges (touching rings or stacked
 method later provides a continuous same-instance score, `pair_counts` can be replaced by a true ROC
 computation without changing the use case.
 
-Shared options: `--method`, `--config JSON`, `--set KEY=VALUE` (repeatable), `--preview_dir`,
+Shared options: `--method`, `--config JSON`, `--set KEY=VALUE` (repeatable), `--preview_dir`, `--preview_overlay`,
 `--limit`, `--sample`, `--seed`; `segment` adds `-o`, `--preview`, `--save_raw`, `--overwrite`,
 `--ext`, `--no_recursive`; `evaluate` adds `-o`, `--iou`.
 
@@ -257,6 +257,7 @@ stay untouched; e.g. a CryoSPARC plugin can call `SegmentImages(...)` with its o
 ```python
 from memseg.segmenters.components import ConnectedComponentsSegmenter
 from memseg.domain import MembraneMask
+
 result = ConnectedComponentsSegmenter(min_size=50).segment(MembraneMask(mask_array))
 labels = result.labels.data
 ```

@@ -2,15 +2,33 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Mapping, Optional
 
 from ..domain.metrics import match_instances, pair_counts, sample_pixel_pairs, summarize
-from ..domain.models import (ComparisonItem, ComparisonSummary, ImageRef, InstanceLabels, MembraneMask,
-                             MethodOutcome, MethodSummary, PairCounts, Status)
-from ..domain.ports import (ComparisonListener, ComparisonReportWriter, ComparisonSink, GroundTruthReader,
-                            ImageSource, InstanceSegmenter, MaskReader, ResultSink)
+from ..domain.models import (
+    ComparisonItem,
+    ComparisonSummary,
+    ImageRef,
+    InstanceLabels,
+    MembraneMask,
+    MethodOutcome,
+    MethodSummary,
+    PairCounts,
+    Status,
+)
+from ..domain.ports import (
+    ComparisonListener,
+    ComparisonReportWriter,
+    ComparisonSink,
+    GroundTruthReader,
+    ImageSource,
+    InstanceSegmenter,
+    MaskReader,
+    ResultSink,
+)
 
 
 def _err(e: BaseException) -> str:
@@ -38,10 +56,10 @@ class CompareSegmenters:
     segmenters: Mapping[str, InstanceSegmenter]
     source: ImageSource
     reader: MaskReader
-    gt_reader: Optional[GroundTruthReader] = None
+    gt_reader: GroundTruthReader | None = None
     method_sinks: Mapping[str, ResultSink] = field(default_factory=dict)
-    comparison_sink: Optional[ComparisonSink] = None
-    report: Optional[ComparisonReportWriter] = None
+    comparison_sink: ComparisonSink | None = None
+    report: ComparisonReportWriter | None = None
     progress: ComparisonListener = field(default_factory=ComparisonListener)
     setup_seconds: Mapping[str, float] = field(default_factory=dict)
     iou_threshold: float = 0.5
@@ -92,12 +110,10 @@ class CompareSegmenters:
         except Exception:
             return
         for seg in self.segmenters.values():
-            try:
+            with contextlib.suppress(Exception):  # the real run records the failure
                 seg.segment(mask)
-            except Exception:
-                pass  # the real run records the failure
 
-    def _read_gt(self, ref: ImageRef) -> Optional[InstanceLabels]:
+    def _read_gt(self, ref: ImageRef) -> InstanceLabels | None:
         if self.gt_reader is None or ref.gt_path is None:
             return None
         return self.gt_reader.read(ref)
@@ -131,10 +147,18 @@ class CompareSegmenters:
                     if o.pairs is not None:
                         pairs = pairs + o.pairs
             total = sum(o.seconds for o in ok)
-            out.append(MethodSummary(
-                method=name, description=self.segmenters[name].describe(), n_ok=len(ok),
-                n_failed=len(outs) - len(ok), setup_seconds=self.setup_seconds.get(name, 0.0),
-                total_seconds=total, mean_seconds=total / len(ok) if ok else 0.0,
-                total_instances=sum(o.result.labels.n_instances for o in ok),
-                evaluation=summarize(matches) if matches else None, pairs=pairs))
+            out.append(
+                MethodSummary(
+                    method=name,
+                    description=self.segmenters[name].describe(),
+                    n_ok=len(ok),
+                    n_failed=len(outs) - len(ok),
+                    setup_seconds=self.setup_seconds.get(name, 0.0),
+                    total_seconds=total,
+                    mean_seconds=total / len(ok) if ok else 0.0,
+                    total_instances=sum(o.result.labels.n_instances for o in ok if o.result is not None),
+                    evaluation=summarize(matches) if matches else None,
+                    pairs=pairs,
+                )
+            )
         return ComparisonSummary(methods=out, n_images=len(items), n_with_gt=sum(it.has_gt for it in items))

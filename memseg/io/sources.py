@@ -5,7 +5,7 @@ from __future__ import annotations
 import glob
 import os
 import random
-from typing import Iterator, Optional, Sequence
+from collections.abc import Iterator, Sequence
 
 from ..domain.models import ImageRef
 from ..domain.ports import ImageSource
@@ -13,7 +13,7 @@ from ..domain.ports import ImageSource
 IMAGE_EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp")
 
 
-def _select(refs: list[ImageRef], sample: Optional[int], seed: int, limit: Optional[int]) -> list[ImageRef]:
+def _select(refs: list[ImageRef], sample: int | None, seed: int, limit: int | None) -> list[ImageRef]:
     if sample:
         refs = random.Random(seed).sample(refs, min(sample, len(refs)))
     if limit:
@@ -28,9 +28,17 @@ class FolderImageSource(ImageSource):
     name if given directly; outputs mirror these keys.
     """
 
-    def __init__(self, inputs: Sequence[str], exts: Sequence[str] = IMAGE_EXTS, recursive: bool = True,
-                 exclude_dirs: Sequence[str] = (), sample: Optional[int] = None, seed: int = 0,
-                 limit: Optional[int] = None, gt_dir: Optional[str] = None):
+    def __init__(
+        self,
+        inputs: Sequence[str],
+        exts: Sequence[str] = IMAGE_EXTS,
+        recursive: bool = True,
+        exclude_dirs: Sequence[str] = (),
+        sample: int | None = None,
+        seed: int = 0,
+        limit: int | None = None,
+        gt_dir: str | None = None,
+    ):
         self.inputs = list(inputs)
         self.gt_dir = gt_dir
         self.exts = tuple(e.lower() if e.startswith(".") else "." + e.lower() for e in exts)
@@ -48,8 +56,11 @@ class FolderImageSource(ImageSource):
             if not os.path.isdir(inp):
                 raise FileNotFoundError(inp)
             for root, dirs, files in os.walk(inp):
-                dirs[:] = sorted(d for d in dirs if not d.startswith(".")
-                                 and os.path.abspath(os.path.join(root, d)) not in self.exclude)
+                dirs[:] = sorted(
+                    d
+                    for d in dirs
+                    if not d.startswith(".") and os.path.abspath(os.path.join(root, d)) not in self.exclude
+                )
                 for fn in sorted(files):
                     if not fn.startswith(".") and fn.lower().endswith(self.exts):
                         p = os.path.join(root, fn)
@@ -84,8 +95,7 @@ class LabelledDatasetSource(ImageSource):
     """Dataset folders laid out as <root>/masks/mask_<tag>.tif and <root>/labels/label_<tag>.tif
     (mask_<tag> in masks/ pairs with label_<tag> in labels/)."""
 
-    def __init__(self, roots: Sequence[str], sample: Optional[int] = None, seed: int = 0,
-                 limit: Optional[int] = None):
+    def __init__(self, roots: Sequence[str], sample: int | None = None, seed: int = 0, limit: int | None = None):
         self.roots = list(roots)
         self.sample, self.seed, self.limit = sample, seed, limit
 

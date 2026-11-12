@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from .models import (EvaluationSummary, InstanceLabels, MatchResult, MembraneMask, PairCounts, PixelScores,
-                     SemanticSummary)
+from .models import (
+    EvaluationSummary,
+    InstanceLabels,
+    MatchResult,
+    MembraneMask,
+    PairCounts,
+    PixelScores,
+    SemanticSummary,
+)
 
 
 def match_instances(gt: InstanceLabels, pred: InstanceLabels, iou_threshold: float = 0.5) -> MatchResult:
@@ -35,13 +42,16 @@ def match_instances(gt: InstanceLabels, pred: InstanceLabels, iou_threshold: flo
     r, c = linear_sum_assignment(-iou)
     ok = iou[r, c] >= iou_threshold
     tp = int(ok.sum())
-    return MatchResult(tp=tp, fp=len(p_ids) - tp, fn=len(g_ids) - tp,
-                       ious=tuple(float(v) for v in iou[r, c][ok]),
-                       matched_gt=frozenset(int(g_ids[i]) for i in r[ok]))
+    return MatchResult(
+        tp=tp,
+        fp=len(p_ids) - tp,
+        fn=len(g_ids) - tp,
+        ious=tuple(float(v) for v in iou[r, c][ok]),
+        matched_gt=frozenset(int(g_ids[i]) for i in r[ok]),
+    )
 
 
-def summarize(results: Sequence[MatchResult],
-              touching: Optional[Sequence[set[int]]] = None) -> EvaluationSummary:
+def summarize(results: Sequence[MatchResult], touching: Sequence[set[int]] | None = None) -> EvaluationSummary:
     tp = sum(r.tp for r in results)
     fp = sum(r.fp for r in results)
     fn = sum(r.fn for r in results)
@@ -52,15 +62,21 @@ def summarize(results: Sequence[MatchResult],
     rt = None
     if touching is not None:
         total = sum(len(s) for s in touching)
-        hit = sum(len(s & r.matched_gt) for s, r in zip(touching, results))
+        hit = sum(len(s & r.matched_gt) for s, r in zip(touching, results, strict=True))
         rt = float(hit / max(total, 1))
-    return EvaluationSummary(precision=float(precision), recall=float(recall), f1=float(f1),
-                             mean_matched_iou=float(np.mean(ious)) if ious else 0.0,
-                             n_images=len(results), recall_touching=rt)
+    return EvaluationSummary(
+        precision=float(precision),
+        recall=float(recall),
+        f1=float(f1),
+        mean_matched_iou=float(np.mean(ious)) if ious else 0.0,
+        n_images=len(results),
+        recall_touching=rt,
+    )
 
 
-def sample_pixel_pairs(gt: InstanceLabels, n_pairs: int = 20000, radius: float = 100.0,
-                       seed: int = 0, max_rounds: int = 20) -> tuple[np.ndarray, np.ndarray]:
+def sample_pixel_pairs(
+    gt: InstanceLabels, n_pairs: int = 20000, radius: float = 100.0, seed: int = 0, max_rounds: int = 20
+) -> tuple[np.ndarray, np.ndarray]:
     """Random pairs of ground-truth membrane pixels at most `radius` px apart.
 
     Nearby pairs are where methods differ (touching rings, stacked layers, gaps); pairs on
@@ -101,11 +117,16 @@ def pair_counts(gt: InstanceLabels, pred: InstanceLabels, pa: np.ndarray, pb: np
     same_gt = g[pa[:, 0], pa[:, 1]] == g[pb[:, 0], pb[:, 1]]
     la, lb = p[pa[:, 0], pa[:, 1]], p[pb[:, 0], pb[:, 1]]
     same_pred = (la == lb) & (la > 0)
-    return PairCounts(tp=int((same_gt & same_pred).sum()), fn=int((same_gt & ~same_pred).sum()),
-                      fp=int((~same_gt & same_pred).sum()), tn=int((~same_gt & ~same_pred).sum()))
+    return PairCounts(
+        tp=int((same_gt & same_pred).sum()),
+        fn=int((same_gt & ~same_pred).sum()),
+        fp=int((~same_gt & same_pred).sum()),
+        tn=int((~same_gt & ~same_pred).sum()),
+    )
 
 
 # ───────────────────────────────────────────── semantic segmentation ──
+
 
 def pixel_scores(gt: MembraneMask, pred: MembraneMask) -> PixelScores:
     """Pixel confusion counts of a predicted membrane mask against a ground-truth mask."""

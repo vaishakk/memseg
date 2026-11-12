@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 import numpy as np
 from scipy import ndimage as ndi
@@ -14,19 +13,20 @@ from ..domain.models import Overlay
 def palette(n: int) -> np.ndarray:
     """Well-separated colours (golden-ratio hues); index 0 is black."""
     from skimage.color import hsv2rgb
+
     i = np.arange(n + 1, dtype=np.float32)
-    hsv = np.stack([np.mod(i * 0.618034, 1), 0.75 + 0.25 * np.mod(i * 0.38197, 1),
-                    0.8 + 0.2 * np.mod(i * 0.23607, 1)], -1)
+    hsv = np.stack(
+        [np.mod(i * 0.618034, 1), 0.75 + 0.25 * np.mod(i * 0.38197, 1), 0.8 + 0.2 * np.mod(i * 0.23607, 1)], -1
+    )
     rgb = (hsv2rgb(hsv[None])[0] * 255).astype(np.uint8)
     rgb[0] = 0
     return rgb
 
 
-def render(labels: np.ndarray, overlay: Optional[Overlay] = None, max_size: int = 1600,
-           mono: bool = False) -> np.ndarray:
+def render(labels: np.ndarray, overlay: Overlay | None = None, max_size: int = 1600, mono: bool = False) -> np.ndarray:
     """Colour image of a label map; mono=True draws every non-zero pixel white (for input masks)."""
     if mono:
-        rgb = np.zeros(labels.shape + (3,), np.uint8)
+        rgb = np.zeros((*labels.shape, 3), np.uint8)
         rgb[labels > 0] = 235
     else:
         rgb = palette(int(labels.max(initial=0)))[labels]
@@ -49,7 +49,8 @@ def render(labels: np.ndarray, overlay: Optional[Overlay] = None, max_size: int 
     return rgb
 
 
-def save_preview(path: str, labels: np.ndarray, overlay: Optional[Overlay] = None, max_size: int = 1600) -> None:
+def save_preview(path: str, labels: np.ndarray, overlay: Overlay | None = None, max_size: int = 1600) -> None:
     from PIL import Image
+
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     Image.fromarray(render(labels, overlay, max_size)).save(path)

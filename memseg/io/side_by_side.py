@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 import numpy as np
 
@@ -19,6 +18,7 @@ BAD = (240, 110, 100)
 
 def _font(size: int):
     from PIL import ImageFont
+
     try:
         return ImageFont.load_default(size=size)
     except TypeError:  # Pillow < 10.1
@@ -37,17 +37,26 @@ class SideBySideSink(ComparisonSink):
     def path(self, item: ComparisonItem) -> str:
         return os.path.join(self.out_dir, os.path.splitext(item.ref.key)[0] + ".png")
 
-    def save(self, item: ComparisonItem, mask: MembraneMask, gt: Optional[InstanceLabels]) -> None:
+    def save(self, item: ComparisonItem, mask: MembraneMask, gt: InstanceLabels | None) -> None:
         from PIL import Image, ImageDraw
+
         panels: list[tuple[np.ndarray, list[tuple[str, tuple]]]] = []
-        panels.append((render(mask.data.astype(np.int32), max_size=self.panel_size, mono=True),
-                       [("input mask", TEXT), (f"{mask.width}x{mask.height}", DIM)]))
+        panels.append(
+            (
+                render(mask.data.astype(np.int32), max_size=self.panel_size, mono=True),
+                [("input mask", TEXT), (f"{mask.width}x{mask.height}", DIM)],
+            )
+        )
         if gt is not None:
-            panels.append((render(gt.data, max_size=self.panel_size),
-                           [("ground truth", TEXT), (f"{gt.n_instances} instances", DIM)]))
+            panels.append(
+                (
+                    render(gt.data, max_size=self.panel_size),
+                    [("ground truth", TEXT), (f"{gt.n_instances} instances", DIM)],
+                )
+            )
         size = panels[0][0].shape[:2]
         for name, o in item.outcomes.items():
-            if o.status is Status.OK:
+            if o.status is Status.OK and o.result is not None:
                 img = render(o.result.labels.data, max_size=self.panel_size)
                 line = f"{o.result.labels.n_instances} instances   {o.seconds:.2f} s"
                 lines = [(name, TEXT), (line, DIM)]
@@ -55,7 +64,7 @@ class SideBySideSink(ComparisonSink):
                     auc = o.pairs.auroc if o.pairs is not None else None
                     lines.append((f"F1 {o.f1:.3f}   AUROC {auc:.3f}" if auc is not None else f"F1 {o.f1:.3f}", TEXT))
             else:
-                img = np.full(size + (3,), 40, np.uint8)
+                img = np.full((*size, 3), 40, np.uint8)
                 lines = [(name, TEXT), ("FAILED", BAD), ((o.error or "")[:60], DIM)]
             panels.append((img, lines))
 

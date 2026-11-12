@@ -27,9 +27,9 @@ The CLI then offers it next to the built-in reference methods:
 Requires Python ≥ 3.11.
 
 ```bash
-pip install "memseg[mrc] @ git+https://github.com/vaishakk/memseg.git"   # [mrc]: read .mrc micrographs
+pip install memseg          # or "memseg[mrc]" to read .mrc micrographs
 # or, from a clone, with uv
-uv sync
+uv sync --extra mrc
 ```
 
 This installs a `memseg` command; `python -m memseg` works the same way.
@@ -66,6 +66,7 @@ memseg semantic --method threshold --instance components --help
 | `--method`, `-m` | method name (see `memseg methods`); default `components` |
 | `--config FILE` / `--set KEY=VALUE` | method parameters from JSON / single overrides (repeatable) |
 | `--preview_dir DIR` | write colour PNG previews |
+| `--preview_overlay` | draw the method's overlay (skeleton / junctions) on instance previews; off by default |
 | `--limit N`, `--sample N`, `--seed S` | process the first N / N random images |
 | `--overwrite` (segment) | recompute images whose output already exists |
 | `--save_raw` (segment) | also write method intermediates (`<name>_raw.npz`) |
@@ -85,6 +86,7 @@ In `compare`, per-method parameters use `--set METHOD.KEY=VALUE` and `--config M
 | `--gt_dir DIR` | ground-truth masks with the same relative names: report pixel IoU / Dice |
 | `--pixel_size A` | Å/px when the file has none (an MRC header value is used when set; 0 and 1.0 count as unset) |
 | `--save_prob`, `--preview` | also write the probability map / PNG previews |
+| `--preview_overlay` | draw the instance method's overlay on instance previews |
 
 ### Inputs and outputs
 
@@ -125,17 +127,17 @@ class GapClosingSegmenter(InstanceSegmenter):
     def __init__(self, gap: int = 3):
         self.gap = gap
 
-    def describe(self) -> str:                                   # shown in logs
+    def describe(self) -> str:  # shown in logs
         return f"gapclose (gap={self.gap})"
 
     def segment(self, mask: MembraneMask) -> SegmentationResult:  # mask.data: 2-D bool
         closed = ndimage.binary_closing(mask.data, np.ones((2 * self.gap + 1,) * 2))
         labels, n = ndimage.label(closed, structure=np.ones((3, 3)))
-        labels[~mask.data] = 0                                   # keep only original membrane pixels
+        labels[~mask.data] = 0  # keep only original membrane pixels
         return SegmentationResult(
-            labels=InstanceLabels.consecutive(labels),           # relabel 1..N
+            labels=InstanceLabels.consecutive(labels),  # relabel 1..N
             method=self.name,
-            info=dict(pieces=n),                                 # small scalars -> summary.csv column
+            info=dict(pieces=n),  # small scalars -> summary.csv column
         )
 
 
@@ -148,12 +150,12 @@ class GapClosingPlugin(SegmenterPlugin):
     def add_arguments(self, group):
         group.add_argument("--gap", type=int, default=3, help="largest gap to bridge (px)")
 
-    def build(self, args, overrides):          # overrides = --config JSON + --set key=value
+    def build(self, args, overrides):  # overrides = --config JSON + --set key=value
         return GapClosingSegmenter(gap=overrides.get("gap", args.gap))
 ```
 
 `SegmentationResult` can also carry `artifacts` (large arrays, written by `--save_raw`) and an
-`overlay` (skeleton / junctions drawn on previews).
+`overlay` (skeleton / junctions drawn on previews with `--preview_overlay`).
 
 ### 2. Register it with the CLI
 
@@ -162,7 +164,7 @@ class GapClosingPlugin(SegmenterPlugin):
 ```toml
 [project]
 name = "my-method"
-dependencies = ["memseg @ git+https://github.com/vaishakk/memseg.git"]
+dependencies = ["memseg>=0.2"]
 
 [project.entry-points."memseg.segmenters"]
 gapclose = "my_method.segmenter:GapClosingPlugin"
@@ -195,8 +197,16 @@ sys.exit(main())
 ```python
 from memseg.application import EvaluateSegmenter, SegmentImages
 from memseg.domain import CompositeSink
-from memseg.io import (ConsoleProgress, CsvReportWriter, FolderImageSource, ImageFileGroundTruthReader,
-                       ImageFileMaskReader, LabelledDatasetSource, LabelTiffSink, PreviewSink)
+from memseg.io import (
+    ConsoleProgress,
+    CsvReportWriter,
+    FolderImageSource,
+    ImageFileGroundTruthReader,
+    ImageFileMaskReader,
+    LabelledDatasetSource,
+    LabelTiffSink,
+    PreviewSink,
+)
 
 from my_method.segmenter import GapClosingSegmenter
 
@@ -205,7 +215,7 @@ seg = GapClosingSegmenter(gap=5)
 # segment: label maps + previews + summary.csv in out/
 SegmentImages(
     segmenter=seg,
-    source=FolderImageSource(["masks/"]),                    # files or folders
+    source=FolderImageSource(["masks/"]),  # files or folders
     reader=ImageFileMaskReader(),
     sink=CompositeSink([LabelTiffSink("out"), PreviewSink("out")]),
     report=CsvReportWriter("out"),
@@ -250,7 +260,7 @@ class MyNet(SemanticSegmenter):
     name = "mynet"
 
     def segment(self, image):
-        prob = run_my_network(image.data, image.pixel_size)        # your model
+        prob = run_my_network(image.data, image.pixel_size)  # your model
         return SemanticResult(MembraneMask(prob > 0.5), self.name, probability=prob)
 
 
@@ -277,7 +287,7 @@ from memseg.semantic.threshold import ThresholdSegmenter
 
 outcomes, summary = SegmentMicrographs(
     semantic=ThresholdSegmenter(),
-    instance=ConnectedComponentsSegmenter(min_size=2000),       # optional
+    instance=ConnectedComponentsSegmenter(min_size=2000),  # optional
     source=FolderImageSource(["micrographs/"], exts=[".mrc"]),
     reader=MicrographFileReader(default_pixel_size=2.7),
     semantic_sink=SemanticMaskSink("out", probability=True),
@@ -299,15 +309,21 @@ memseg/
 tests/                use-case tests with in-memory fakes, plugins, semantic pipeline, CLI
 ```
 
-See [architecture.md](architecture.md) for the design, the pair-AUROC metric and how to add
+See [architecture.md](https://github.com/vaishakk/memseg/blob/main/architecture.md) for the design, the pair-AUROC metric and how to add
 methods or I/O adapters.
 
-## Tests
+## Development
 
 ```bash
-uv run pytest
+uv sync --extra mrc
+uv run pytest              # tests
+uv run ruff check .        # lint
+uv run ruff format .       # format
+uv run mypy                # type-check
 ```
+
+CI runs all four on every push and pull request.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/vaishakk/memseg/blob/main/LICENSE).
