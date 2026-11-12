@@ -7,9 +7,10 @@ segmentation method (plugin), the file adapters and the use case, and wires them
     python -m memseg segment  INPUT... -o OUT --method METHOD [--preview] [--set KEY=VALUE]
     python -m memseg evaluate DATASET... --method METHOD --limit 20 [-o OUT]
     python -m memseg compare  INPUT... -o OUT --methods METHOD_A METHOD_B
+    python -m memseg semantic MICROGRAPH... -o OUT --method SEMANTIC [--instance METHOD] [--gt_dir DIR]
 
 `python -m memseg segment --method METHOD --help` lists the method's own options.
-Methods are plugins: see memseg.segmenters.
+Methods are plugins: see memseg.segmenters (instance) and memseg.semantic (semantic).
 """
 
 from __future__ import annotations
@@ -20,16 +21,19 @@ import sys
 import time
 from typing import Optional, Sequence
 
-from . import segmenters
-from .application import CompareSegmenters, EvaluateSegmenter, PairSampling, SegmentImages
+from . import segmenters, semantic
+from .application import CompareSegmenters, EvaluateSegmenter, PairSampling, SegmentImages, SegmentMicrographs
 from .domain import CompositeSink, NullSink, Status
-from .io import (IMAGE_EXTS, ArtifactSink, ComparisonCsvReport, ConsoleComparison, ConsoleProgress,
-                 CsvReportWriter, FolderImageSource, ImageFileGroundTruthReader, ImageFileMaskReader,
-                 LabelledDatasetSource, LabelTiffSink, PreviewSink, SideBySideSink)
+from .io import (IMAGE_EXTS, MICROGRAPH_EXTS, ArtifactSink, ComparisonCsvReport, ConsoleComparison,
+                 ConsoleMicrographProgress, ConsoleProgress, CsvReportWriter, FolderImageSource,
+                 ImageFileGroundTruthMaskReader, ImageFileGroundTruthReader, ImageFileMaskReader,
+                 LabelledDatasetSource, LabelTiffSink, MicrographFileReader, PreviewSink, SemanticMaskSink,
+                 SemanticPreviewSink, SideBySideSink)
 from .io.sources import is_labelled_dataset
 from .segmenters.base import load_overrides
 
 DEFAULT_METHOD = "components"
+DEFAULT_SEMANTIC_METHOD = "threshold"
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -50,6 +54,8 @@ def build_parser(method: Optional[str] = None, compare_methods: Sequence[str] = 
     sub = ap.add_subparsers(dest="command", required=True)
 
     sub.add_parser("methods", help="list available segmentation methods")
+    sub.add_parser("semantic", help="segment micrographs into membrane masks (optionally then into instances); "
+                                    "see `memseg semantic --help`")
 
     s = sub.add_parser("segment", help="segment masks and write instance label maps",
                        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -197,12 +203,114 @@ def _sinks(out_dir: Optional[str], preview: bool, preview_dir: Optional[str], sa
     return CompositeSink(sinks) if sinks else NullSink()
 
 
+# ───────────────────────────────────────────── semantic segmentation ──
+
+def build_semantic_parser(method: Optional[str] = None, instance: Optional[str] = None) -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="memseg semantic", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="Segment micrographs into membrane masks with a semantic method, optionally split each "
+                    "mask into instances with an instance method, and score masks against ground truth.")
+    p.add_argument("inputs", nargs="+", help="micrograph files or folders (searched recursively)")
+    p.add_argument("--output_dir", "-o", required=True,
+                   help="<name>_mask.tif (+ _prob.tif, _mask.png), instances/<name>.tif, summary.csv here")
+    p.add_argument("--method", "-m", default=DEFAULT_SEMANTIC_METHOD, choices=semantic.available(),
+                   help="semantic segmentation method")
+    p.add_argument("--config", default=None, help="JSON file with semantic method parameters")
+    p.add_argument("--set", action="append", metavar="KEY=VALUE", default=[],
+                   help="override one semantic method parameter (repeatable)")
+    p.add_argument("--instance", default=None, choices=segmenters.available(),
+                   help="instance method applied to each mask")
+    p.add_argument("--instance_config", default=None, help="JSON file with instance method parameters")
+    p.add_argument("--instance_set", action="append", metavar="KEY=VALUE", default=[],
+                   help="override one instance method parameter (repeatable)")
+    p.add_argument("--gt_dir", default=None,
+                   help="ground-truth membrane masks (same relative names, any image extension): "
+                        "report pixel IoU / Dice")
+    p.add_argument("--pixel_size", type=float, default=None,
+                   help="pixel size (A/px) when the file does not provide one (MRC header)")
+    p.add_argument("--no_header_pixel_size", action="store_true", help="ignore MRC header pixel sizes")
+    p.add_argument("--save_prob", action="store_true", help="also write <name>_prob.tif when the method gives one")
+    p.add_argument("--preview", action="store_true",
+                   help="also write <name>_mask.png and, with --instance, instances/<name>_preview.png")
+    p.add_argument("--overwrite", action="store_true", help="recompute images whose mask exists")
+    p.add_argument("--ext", default=",".join(MICROGRAPH_EXTS), help="comma-separated input extensions")
+    p.add_argument("--no_recursive", action="store_true", help="do not descend into sub-folders")
+    p.add_argument("--limit", type=int, default=None, help="process at most N images")
+    p.add_argument("--sample", type=int, default=None, help="process N randomly chosen images")
+    p.add_argument("--seed", type=int, default=0, help="random seed for --sample")
+    if method:
+        semantic.get_plugin(method).add_arguments(p.add_argument_group(f"{method} (semantic) options"))
+    if instance:
+        group = p.add_argument_group(f"{instance} (instance) options")
+        try:
+            segmenters.get_plugin(instance).add_arguments(group)
+        except argparse.ArgumentError as e:
+            raise SystemExit(f"options of {method!r} and {instance!r} clash: {e}")
+    return p
+
+
+def run_semantic(argv: Sequence[str]) -> int:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--method", "-m", default=DEFAULT_SEMANTIC_METHOD)
+    pre.add_argument("--instance", default=None)
+    known, _ = pre.parse_known_args(argv)
+    if known.method not in semantic.available():
+        print(f"unknown semantic method {known.method!r}; available: {', '.join(semantic.available())}",
+              file=sys.stderr)
+        return 2
+    if known.instance is not None and known.instance not in segmenters.available():
+        print(f"unknown instance method {known.instance!r}; available: {', '.join(segmenters.available())}",
+              file=sys.stderr)
+        return 2
+    args = build_semantic_parser(known.method, known.instance).parse_args(argv)
+
+    sem = semantic.get_plugin(args.method).build(args, load_overrides(args.config, args.set))
+    inst = None
+    if args.instance:
+        inst = segmenters.get_plugin(args.instance).build(args, load_overrides(args.instance_config,
+                                                                                 args.instance_set))
+    out_dir = os.path.abspath(args.output_dir)
+    inst_dir = os.path.join(out_dir, "instances")
+    exts = [x.strip() for x in args.ext.split(",") if x.strip()]
+    source = FolderImageSource(args.inputs, exts, recursive=not args.no_recursive, exclude_dirs=[out_dir],
+                               sample=args.sample, seed=args.seed, limit=args.limit, gt_dir=args.gt_dir)
+    sem_sinks = [SemanticMaskSink(out_dir, probability=args.save_prob)]
+    if args.preview:
+        sem_sinks.append(SemanticPreviewSink(out_dir))
+    inst_sinks = [LabelTiffSink(inst_dir)] + ([PreviewSink(inst_dir)] if args.preview else [])
+    header = f"semantic    {sem.describe()}"
+    if inst is not None:
+        header += f"\ninstance    {inst.describe()}"
+    use_case = SegmentMicrographs(
+        semantic=sem, source=source,
+        reader=MicrographFileReader(args.pixel_size, use_header=not args.no_header_pixel_size),
+        instance=inst, semantic_sink=CompositeSink(sem_sinks),
+        instance_sink=CompositeSink(inst_sinks) if inst is not None else NullSink(),
+        gt_reader=ImageFileGroundTruthMaskReader() if args.gt_dir else None,
+        report=CsvReportWriter(out_dir),
+        progress=ConsoleMicrographProgress(header=header + f"\noutput      {out_dir}"),
+        skip_existing=not args.overwrite)
+    outcomes, _ = use_case.run()
+    if not outcomes:
+        print("no images found", file=sys.stderr)
+        return 1
+    ok = sum(o.status is Status.OK for o in outcomes)
+    skipped = sum(o.status is Status.SKIPPED for o in outcomes)
+    return 0 if ok or skipped == len(outcomes) else 1
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "methods":
+        print("instance methods (mask -> instances; segment / evaluate / compare / semantic --instance):")
         for name in segmenters.available():
-            print(f"{name:12s} {segmenters.summary(name)}")
+            print(f"  {name:12s} {segmenters.summary(name)}")
+        print("semantic methods (micrograph -> mask; semantic --method):")
+        for name in semantic.available():
+            print(f"  {name:12s} {semantic.summary(name)}")
         return 0
+    if argv and argv[0] == "semantic":
+        return run_semantic(argv[1:])
     if argv and argv[0] == "compare":
         methods = _peek_methods(argv)
         bad = [m for m in methods if m not in segmenters.available()]

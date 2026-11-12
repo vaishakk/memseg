@@ -249,3 +249,126 @@ class ComparisonSummary:
     methods: list[MethodSummary]
     n_images: int
     n_with_gt: int
+
+
+# ───────────────────────────────────────────── semantic segmentation ──
+
+@dataclass
+class Micrograph:
+    """A raw 2-D image (e.g. a cryo-EM micrograph) to be segmented into membrane / background.
+
+    pixel_size:  Å per pixel if known (e.g. from an MRC header), else None
+    """
+
+    data: np.ndarray
+    ref: Optional[ImageRef] = None
+    pixel_size: Optional[float] = None
+
+    def __post_init__(self):
+        a = np.squeeze(np.asarray(self.data))
+        if a.ndim != 2:
+            raise ValueError(f"micrograph must be 2D, got shape {a.shape}")
+        self.data = a.astype(np.float32, copy=False)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return self.data.shape  # type: ignore[return-value]
+
+
+@dataclass
+class SemanticResult:
+    """Output of one semantic method on one micrograph.
+
+    mask:         the membrane mask (the input for an instance method)
+    probability:  optional per-pixel membrane probability / score in [0, 1], same shape
+    info:         small scalar diagnostics (written to reports)
+    artifacts:    optional large intermediate arrays a sink may save
+    """
+
+    mask: MembraneMask
+    method: str
+    probability: Optional[np.ndarray] = None
+    info: dict[str, Any] = field(default_factory=dict)
+    artifacts: dict[str, np.ndarray] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.probability is not None and np.shape(self.probability) != self.mask.shape:
+            raise ValueError(f"probability shape {np.shape(self.probability)} != mask shape {self.mask.shape}")
+
+
+@dataclass(frozen=True)
+class PixelScores:
+    """Pixel-level confusion counts of a predicted mask against a ground-truth mask.
+    Additive, so they can be pooled over images."""
+
+    tp: int = 0
+    fp: int = 0
+    fn: int = 0
+    tn: int = 0
+
+    def __add__(self, o: "PixelScores") -> "PixelScores":
+        return PixelScores(self.tp + o.tp, self.fp + o.fp, self.fn + o.fn, self.tn + o.tn)
+
+    @property
+    def iou(self) -> float:
+        return self.tp / max(self.tp + self.fp + self.fn, 1)
+
+    @property
+    def dice(self) -> float:
+        return 2 * self.tp / max(2 * self.tp + self.fp + self.fn, 1)
+
+    @property
+    def precision(self) -> float:
+        return self.tp / max(self.tp + self.fp, 1)
+
+    @property
+    def recall(self) -> float:
+        return self.tp / max(self.tp + self.fn, 1)
+
+
+@dataclass(frozen=True)
+class SemanticSummary:
+    """Pixel scores pooled over all images, plus the per-image mean IoU."""
+
+    pooled: PixelScores
+    mean_iou: float
+    n_images: int
+
+    def as_dict(self) -> dict[str, float]:
+        p = self.pooled
+        return dict(iou=p.iou, dice=p.dice, precision=p.precision, recall=p.recall,
+                    mean_image_iou=self.mean_iou, n_images=self.n_images)
+
+
+@dataclass
+class MicrographOutcome:
+    """What happened to one micrograph: semantic result, optional instances and scores."""
+
+    ref: ImageRef
+    status: Status
+    seconds: float = 0.0
+    shape: Optional[tuple[int, int]] = None
+    semantic: Optional[SemanticResult] = None
+    instances: Optional[SegmentationResult] = None
+    scores: Optional[PixelScores] = None
+    error: Optional[str] = None
+
+    def report_row(self) -> Mapping[str, Any]:
+        row: dict[str, Any] = dict(image=self.ref.key, status=self.status.value)
+        if self.shape:
+            row.update(height=self.shape[0], width=self.shape[1])
+        if self.semantic is not None:
+            s = self.semantic
+            row.update(semantic_method=s.method, membrane_fraction=round(float(s.mask.data.mean()), 5))
+            row.update({f"semantic_{k}": v for k, v in s.info.items()})
+        if self.instances is not None:
+            r = self.instances
+            row.update(instance_method=r.method, n_instances=r.labels.n_instances)
+            row.update({f"instance_{k}": v for k, v in r.info.items()})
+        if self.scores is not None:
+            row.update(iou=round(self.scores.iou, 4), dice=round(self.scores.dice, 4))
+        if self.status is not Status.SKIPPED:
+            row["seconds"] = round(self.seconds, 2)
+        if self.error:
+            row["error"] = self.error
+        return row

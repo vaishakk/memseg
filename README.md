@@ -1,26 +1,33 @@
 # memseg
 
-A framework for **membrane instance segmentation** in cryo-EM. It turns **binary membrane masks** into
-**instance label maps**: one label per membrane, or one per layer of a multilamellar vesicle.
+A framework for **membrane segmentation** in cryo-EM, in two stages that can be used together or apart:
+
+* **semantic**: micrograph → **binary membrane mask** (plus an optional probability map);
+* **instance**: binary membrane mask → **instance label map**, with one label per membrane, or one
+  per layer of a multilamellar vesicle.
 
 `memseg` provides everything around a segmentation method:
 
-* reading mask folders, labelled datasets and ground truth;
+* reading micrographs (`.mrc` with header pixel size, `.tif`, ...), mask folders, labelled datasets and ground truth;
 * writing label maps, colour previews and CSV/JSON reports;
-* scoring: precision, recall, F1 and IoU with Hungarian matching, plus pair AUROC;
+* scoring:
+  * instances: precision, recall, F1 and IoU with Hungarian matching, plus pair AUROC;
+  * masks: pixel IoU, Dice, precision and recall;
 * side-by-side comparison of methods, with timing;
 * a command line interface.
 
 **Methods are plugins.** Any installed package can add one through a Python entry point.
-The CLI then offers it next to the built-in reference method `components`, which makes every
-connected piece of membrane one instance.
+The CLI then offers it next to the built-in reference methods:
+
+* `threshold` (semantic): a background-corrected threshold for dark lines;
+* `components` (instance): every connected piece of membrane becomes one instance.
 
 ## Installation
 
 Requires Python ≥ 3.11.
 
 ```bash
-pip install git+https://github.com/vaishakk/memseg.git
+pip install "memseg[mrc] @ git+https://github.com/vaishakk/memseg.git"   # [mrc]: read .mrc micrographs
 # or, from a clone, with uv
 uv sync
 ```
@@ -45,6 +52,11 @@ memseg compare masks/ --gt_dir labels/ -o cmp --methods components my_method --s
 
 # a method's own options
 memseg segment --method components --help
+
+# semantic: micrographs -> membrane masks, optionally -> instances, scored against GT masks
+memseg semantic micrographs/ -o out --method threshold --preview
+memseg semantic micrographs/ -o out --method threshold --instance components --gt_dir gt_masks/ --save_prob
+memseg semantic --method threshold --instance components --help
 ```
 
 ### Common options
@@ -62,15 +74,30 @@ memseg segment --method components --help
 In `compare`, per-method parameters use `--set METHOD.KEY=VALUE` and `--config METHOD=FILE`.
 `--methods` defaults to every installed method.
 
+`semantic` has its own options:
+
+| option | meaning |
+|---|---|
+| `--method`, `-m` | semantic method; default `threshold` |
+| `--config` / `--set` | semantic method parameters |
+| `--instance METHOD` | also run an instance method on each mask |
+| `--instance_config` / `--instance_set` | instance method parameters |
+| `--gt_dir DIR` | ground-truth masks with the same relative names: report pixel IoU / Dice |
+| `--pixel_size A` | Å/px when the file has none (an MRC header value is used when set; 0 and 1.0 count as unset) |
+| `--save_prob`, `--preview` | also write the probability map / PNG previews |
+
 ### Inputs and outputs
 
 * Inputs: `.tif .tiff .png .jpg .jpeg .bmp` masks (non-zero = membrane).
 * Label maps: `<name>.tif` (uint16, uint32 if > 65 535 instances), mirroring the input folder structure.
-* `summary.csv` per run (+ `summary.json` for `evaluate`).
+* `summary.csv` per run (+ `summary.json` for `evaluate`, and for `semantic` with `--gt_dir`).
 * `compare` writes:
   * `side_by_side/<name>.png`: mask | GT | one panel per method;
   * `<method>/<name>.tif`;
   * `comparison.csv` and `comparison.json`.
+* `semantic` writes:
+  * `<name>_mask.tif` (uint8, 255 = membrane), plus `<name>_prob.tif` and `<name>_mask.png` when asked;
+  * `instances/<name>.tif` (+ `_preview.png`) with `--instance`.
 
 ## Writing your own method
 
@@ -200,16 +227,76 @@ You can swap any adapter for your own implementation of the matching port in `me
 (`ImageSource`, `MaskReader`, `ResultSink`, `ReportWriter`, `ProgressListener`). For example, a port
 could read MRC files or write results into a CryoSPARC job.
 
+### Semantic methods
+
+A semantic method implements `SemanticSegmenter.segment(image: Micrograph) -> SemanticResult`.
+
+* `image.data` is a 2-D float32 array, and `image.pixel_size` is in Å/px, or `None` if unknown.
+* The result holds:
+  * the `MembraneMask`;
+  * an optional `probability` map in [0, 1];
+  * `info` scalars, which go into `summary.csv`.
+* Its plugin subclasses `memseg.semantic.base.SemanticSegmenterPlugin` and registers in its own
+  entry-point group.
+
+Its CLI options share the command line with the instance method's, so prefix them, e.g. `--mynet_model`.
+
+```python
+from memseg.domain import MembraneMask, SemanticResult, SemanticSegmenter
+from memseg.semantic.base import SemanticSegmenterPlugin
+
+
+class MyNet(SemanticSegmenter):
+    name = "mynet"
+
+    def segment(self, image):
+        prob = run_my_network(image.data, image.pixel_size)        # your model
+        return SemanticResult(MembraneMask(prob > 0.5), self.name, probability=prob)
+
+
+class MyNetPlugin(SemanticSegmenterPlugin):
+    name = "mynet"
+    summary = "my membrane network"
+
+    def build(self, args, overrides):
+        return MyNet()
+```
+
+```toml
+[project.entry-points."memseg.semantic"]
+mynet = "my_method.semantic:MyNetPlugin"
+```
+
+From Python, `SegmentMicrographs` chains any semantic method with any instance method:
+
+```python
+from memseg.application import SegmentMicrographs
+from memseg.io import ConsoleMicrographProgress, FolderImageSource, MicrographFileReader, SemanticMaskSink
+from memseg.segmenters.components import ConnectedComponentsSegmenter
+from memseg.semantic.threshold import ThresholdSegmenter
+
+outcomes, summary = SegmentMicrographs(
+    semantic=ThresholdSegmenter(),
+    instance=ConnectedComponentsSegmenter(min_size=2000),       # optional
+    source=FolderImageSource(["micrographs/"], exts=[".mrc"]),
+    reader=MicrographFileReader(default_pixel_size=2.7),
+    semantic_sink=SemanticMaskSink("out", probability=True),
+    progress=ConsoleMicrographProgress(),
+).run()
+```
+
 ## Project layout
 
 ```
 memseg/
 ├── cli.py            command line / composition root
+├── registry.py       plugin discovery (built-ins + entry points), shared by both method families
 ├── domain/           models, ports (interfaces), metrics — no I/O
-├── application/      use cases: SegmentImages, EvaluateSegmenter, CompareSegmenters
-├── io/               file readers/writers, previews, reports
-└── segmenters/       plugin registry (built-ins + entry points), SegmenterPlugin, `components`
-tests/                use-case tests with in-memory fakes, plugin registry tests
+├── application/      use cases: SegmentImages, EvaluateSegmenter, CompareSegmenters, SegmentMicrographs
+├── io/               file readers/writers (incl. micrographs), previews, reports
+├── segmenters/       instance methods: registry, SegmenterPlugin, `components`
+└── semantic/         semantic methods: registry, SemanticSegmenterPlugin, `threshold`
+tests/                use-case tests with in-memory fakes, plugins, semantic pipeline, CLI
 ```
 
 See [architecture.md](architecture.md) for the design, the pair-AUROC metric and how to add

@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from memseg import segmenters  # noqa: E402
+from memseg import registry, segmenters  # noqa: E402
 from memseg.cli import main  # noqa: E402
 from memseg.domain import MembraneMask  # noqa: E402
 from memseg.segmenters.base import SegmenterPlugin  # noqa: E402
@@ -40,7 +40,7 @@ def test_entry_point_methods_are_discovered(monkeypatch, capsys):
     mod.FakePlugin = _FakePlugin
     monkeypatch.setitem(sys.modules, "fake_memseg_plugin", mod)
     eps = [EntryPoint(name="fake", value="fake_memseg_plugin:FakePlugin", group=segmenters.ENTRY_POINT_GROUP)]
-    monkeypatch.setattr(segmenters, "entry_points", lambda group: eps if group == segmenters.ENTRY_POINT_GROUP else [])
+    monkeypatch.setattr(registry, "entry_points", lambda group: eps if group == segmenters.ENTRY_POINT_GROUP else [])
 
     assert segmenters.available() == ["components", "fake"]
     assert isinstance(segmenters.get_plugin("fake"), _FakePlugin)
@@ -50,12 +50,12 @@ def test_entry_point_methods_are_discovered(monkeypatch, capsys):
 
 def test_builtin_name_wins_over_entry_point(monkeypatch):
     eps = [EntryPoint(name="components", value="nowhere:Nothing", group=segmenters.ENTRY_POINT_GROUP)]
-    monkeypatch.setattr(segmenters, "entry_points", lambda group: eps)
+    monkeypatch.setattr(registry, "entry_points", lambda group: eps)
     assert segmenters.get_plugin("components").name == "components"
 
 
 def test_broken_plugin_does_not_break_methods_listing(monkeypatch, capsys):
     eps = [EntryPoint(name="broken", value="no_such_module_xyz:Plugin", group=segmenters.ENTRY_POINT_GROUP)]
-    monkeypatch.setattr(segmenters, "entry_points", lambda group: eps)
+    monkeypatch.setattr(registry, "entry_points", lambda group: eps)
     assert main(["methods"]) == 0
     assert "failed to load" in capsys.readouterr().out

@@ -1,8 +1,9 @@
 """Ports: interfaces the application layer depends on. Adapters implement them.
 
-The segmentation method is the main inverted dependency: use cases only know
-`InstanceSegmenter`; concrete methods are plugins found via
-memseg.segmenters and are injected by the composition root (memseg.cli).
+The segmentation methods are the main inverted dependencies: use cases only know
+`InstanceSegmenter` (mask -> instances) and `SemanticSegmenter` (micrograph -> mask);
+concrete methods are plugins found via memseg.segmenters / memseg.semantic and are
+injected by the composition root (memseg.cli).
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from abc import ABC, abstractmethod
 from typing import Iterable, Iterator, Optional, Sequence
 
 from .models import (ComparisonItem, ComparisonSummary, EvaluationSummary, ImageRef, InstanceLabels, ItemOutcome,
-                     MembraneMask, SegmentationResult)
+                     MembraneMask, Micrograph, MicrographOutcome, SegmentationResult, SemanticResult, SemanticSummary)
 
 
 class InstanceSegmenter(ABC):
@@ -118,4 +119,59 @@ class ComparisonListener(ABC):
         pass
 
     def finished(self, items: Sequence[ComparisonItem], summary: ComparisonSummary) -> None:  # pragma: no cover
+        pass
+
+
+# ───────────────────────────────────────────── semantic segmentation ──
+
+class SemanticSegmenter(ABC):
+    """A semantic segmentation method: micrograph in, membrane mask (+ optional probability) out."""
+
+    #: short registry name, e.g. "threshold"
+    name: str = "unnamed"
+
+    @abstractmethod
+    def segment(self, image: Micrograph) -> SemanticResult:
+        """Segment one micrograph. Must not perform any file I/O."""
+
+    def describe(self) -> str:
+        """One line for logs (model, key parameters)."""
+        return self.name
+
+
+class MicrographReader(ABC):
+    @abstractmethod
+    def read(self, ref: ImageRef) -> Micrograph: ...
+
+
+class GroundTruthMaskReader(ABC):
+    """Reads the ground-truth membrane mask for `ref.gt_path`."""
+
+    @abstractmethod
+    def read(self, ref: ImageRef) -> MembraneMask: ...
+
+
+class SemanticSink(ABC):
+    """Persists semantic results. `CompositeSink` and `NullSink` work with these sinks too."""
+
+    def exists(self, ref: ImageRef) -> bool:
+        return False
+
+    @abstractmethod
+    def save(self, ref: ImageRef, result: SemanticResult) -> None: ...
+
+
+class SemanticReportWriter(ABC):
+    @abstractmethod
+    def write(self, outcomes: Sequence[MicrographOutcome], summary: SemanticSummary | None = None) -> None: ...
+
+
+class MicrographListener(ABC):
+    def start(self, total: int, description: str) -> None:  # pragma: no cover - default no-op
+        pass
+
+    def item_done(self, index: int, total: int, outcome: MicrographOutcome) -> None:  # pragma: no cover
+        pass
+
+    def finished(self, outcomes: Sequence[MicrographOutcome], summary: SemanticSummary | None) -> None:  # pragma: no cover
         pass

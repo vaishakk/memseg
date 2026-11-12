@@ -1,4 +1,4 @@
-"""Registry of segmentation methods.
+"""Registry of instance segmentation methods (binary mask -> instance labels).
 
 Methods come from two places:
 
@@ -10,14 +10,12 @@ Methods come from two places:
       mymethod = "mypackage.segmenter:MyPlugin"
 
 Plugins are imported lazily, so a method's heavy dependencies (e.g. torch) load only
-when that method is used.
+when that method is used. Semantic methods (micrograph -> mask) live in memseg.semantic.
 """
 
 from __future__ import annotations
 
-import importlib
-from importlib.metadata import entry_points
-
+from ..registry import PluginRegistry
 from .base import SegmenterPlugin
 
 ENTRY_POINT_GROUP = "memseg.segmenters"
@@ -30,31 +28,16 @@ REGISTRY: dict[str, str] = {
 # optional one-line descriptions for `memseg methods` (else the plugin's `summary`)
 SUMMARIES: dict[str, str] = {}
 
-
-def _entry_points() -> dict[str, str]:
-    return {ep.name: ep.value for ep in entry_points(group=ENTRY_POINT_GROUP)}
-
-
-def _all() -> dict[str, str]:
-    return {**REGISTRY, **{k: v for k, v in _entry_points().items() if k not in REGISTRY}}
+_registry = PluginRegistry(ENTRY_POINT_GROUP, REGISTRY, SUMMARIES)
 
 
 def available() -> list[str]:
-    return list(_all())
+    return _registry.available()
 
 
 def get_plugin(name: str) -> SegmenterPlugin:
-    targets = _all()
-    if name not in targets:
-        raise KeyError(f"unknown method {name!r}; available: {', '.join(targets)}")
-    module, cls = targets[name].split(":")
-    return getattr(importlib.import_module(module), cls)()
+    return _registry.get_plugin(name)
 
 
 def summary(name: str) -> str:
-    if name in SUMMARIES:
-        return SUMMARIES[name]
-    try:
-        return get_plugin(name).summary
-    except Exception as exc:  # a broken plugin must not break `memseg methods`
-        return f"(failed to load: {exc})"
+    return _registry.summary(name)

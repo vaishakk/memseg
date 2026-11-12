@@ -7,7 +7,8 @@ from typing import Optional, Sequence
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from .models import EvaluationSummary, InstanceLabels, MatchResult, PairCounts
+from .models import (EvaluationSummary, InstanceLabels, MatchResult, MembraneMask, PairCounts, PixelScores,
+                     SemanticSummary)
 
 
 def match_instances(gt: InstanceLabels, pred: InstanceLabels, iou_threshold: float = 0.5) -> MatchResult:
@@ -102,3 +103,22 @@ def pair_counts(gt: InstanceLabels, pred: InstanceLabels, pa: np.ndarray, pb: np
     same_pred = (la == lb) & (la > 0)
     return PairCounts(tp=int((same_gt & same_pred).sum()), fn=int((same_gt & ~same_pred).sum()),
                       fp=int((~same_gt & same_pred).sum()), tn=int((~same_gt & ~same_pred).sum()))
+
+
+# ───────────────────────────────────────────── semantic segmentation ──
+
+def pixel_scores(gt: MembraneMask, pred: MembraneMask) -> PixelScores:
+    """Pixel confusion counts of a predicted membrane mask against a ground-truth mask."""
+    g, p = gt.data, pred.data
+    if g.shape != p.shape:
+        raise ValueError(f"shape mismatch: gt {g.shape} vs prediction {p.shape}")
+    tp = int(np.count_nonzero(g & p))
+    fp = int(np.count_nonzero(p)) - tp
+    fn = int(np.count_nonzero(g)) - tp
+    return PixelScores(tp=tp, fp=fp, fn=fn, tn=int(g.size) - tp - fp - fn)
+
+
+def summarize_semantic(scores: Sequence[PixelScores]) -> SemanticSummary:
+    pooled = sum(scores, PixelScores())
+    mean = float(np.mean([s.iou for s in scores])) if scores else 0.0
+    return SemanticSummary(pooled=pooled, mean_iou=mean, n_images=len(scores))

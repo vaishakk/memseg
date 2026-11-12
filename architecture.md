@@ -1,13 +1,21 @@
 # memseg architecture
 
-`memseg` turns binary membrane masks into instance label maps (one label per membrane,
-one label per layer of a multilamellar vesicle).
+`memseg` segments membranes in two stages:
 
-Every segmentation method sits behind one interface, `InstanceSegmenter`. Methods are plugins:
-the built-in reference method `components` ships with the package, and other packages add
-methods through the `memseg.segmenters` entry-point group. Everything else (reading files,
-choosing images, writing outputs, scoring against ground truth, the CLI) is shared and
-does not know which method runs.
+* **semantic**: micrograph → binary membrane mask;
+* **instance**: mask → instance label map, with one label per membrane, or one per layer of a
+  multilamellar vesicle.
+
+Each stage has one interface: `SemanticSegmenter` and `InstanceSegmenter`. The stages connect
+only through a `MembraneMask`, so any semantic method can feed any instance method.
+
+Methods are plugins:
+
+* built-in reference methods ship with the package: `threshold` (semantic) and `components` (instance);
+* other packages add methods through the entry-point groups `memseg.semantic` and `memseg.segmenters`.
+
+Everything else (reading files, choosing images, writing outputs, scoring against ground truth,
+the CLI) is shared and does not know which method runs.
 
 ## Layers and the dependency rule
 
@@ -48,30 +56,44 @@ memseg/
 ├── domain/                     CORE — no I/O
 │   ├── models.py               ImageRef, MembraneMask, InstanceLabels, SegmentationResult, Overlay,
 │   │                           MatchResult, EvaluationSummary, ItemOutcome, Status,
-│   │                           PairCounts, MethodOutcome, ComparisonItem, MethodSummary, ComparisonSummary
+│   │                           PairCounts, MethodOutcome, ComparisonItem, MethodSummary, ComparisonSummary,
+│   │                           Micrograph, SemanticResult, PixelScores, SemanticSummary, MicrographOutcome
 │   ├── ports.py                InstanceSegmenter, ImageSource, MaskReader, GroundTruthReader,
 │   │                           ResultSink (+ CompositeSink, NullSink), ReportWriter, ProgressListener,
-│   │                           ComparisonSink, ComparisonReportWriter, ComparisonListener
+│   │                           ComparisonSink, ComparisonReportWriter, ComparisonListener,
+│   │                           SemanticSegmenter, MicrographReader, GroundTruthMaskReader, SemanticSink,
+│   │                           SemanticReportWriter, MicrographListener
 │   └── metrics.py              match_instances (Hungarian on IoU), summarize,
-│                               sample_pixel_pairs + pair_counts (pair AUROC)
+│                               sample_pixel_pairs + pair_counts (pair AUROC),
+│                               pixel_scores + summarize_semantic (pixel IoU / Dice)
 ├── application/                CORE — use cases
 │   ├── use_cases.py            SegmentImages, EvaluateSegmenter
-│   └── compare.py              CompareSegmenters, PairSampling
+│   ├── compare.py              CompareSegmenters, PairSampling
+│   └── semantic.py             SegmentMicrographs (semantic [-> instance], optional pixel scoring)
 ├── io/                         adapters for the file system
 │   ├── images.py               ImageFileMaskReader, ImageFileGroundTruthReader, write_labels
+│   ├── micrographs.py          MicrographFileReader (.mrc + header pixel size, .tif, ...),
+│   │                           ImageFileGroundTruthMaskReader, SemanticMaskSink, SemanticPreviewSink,
+│   │                           ConsoleMicrographProgress
 │   ├── sources.py              FolderImageSource, LabelledDatasetSource (masks/ + labels/)
 │   ├── sinks.py                LabelTiffSink, PreviewSink, ArtifactSink
 │   ├── previews.py             colour rendering (+ optional skeleton/junction overlay, mono masks)
 │   ├── side_by_side.py         SideBySideSink: captioned panels mask | GT | method A | method B ...
 │   └── reports.py              CsvReportWriter (summary.csv/.json), ConsoleProgress,
 │                               ComparisonCsvReport (comparison.csv/.json), ConsoleComparison (results table)
-└── segmenters/                 adapters: segmentation methods
-    ├── __init__.py             registry: REGISTRY (built-ins, run-time registration) +
-    │                           entry points in group "memseg.segmenters"; lazy import
-    ├── base.py                 SegmenterPlugin (CLI options + factory, summary), --config/--set parsing
-    └── components.py           reference method: one instance per connected piece
+├── registry.py                 PluginRegistry: built-ins + entry points, lazy import (both families)
+├── segmenters/                 adapters: instance methods
+│   ├── __init__.py             registry: REGISTRY (built-ins, run-time registration) +
+│   │                           entry points in group "memseg.segmenters"
+│   ├── base.py                 SegmenterPlugin (CLI options + factory, summary), --config/--set parsing
+│   └── components.py           reference method: one instance per connected piece
+└── semantic/                   adapters: semantic methods
+    ├── __init__.py             registry: REGISTRY + entry points in group "memseg.semantic"
+    ├── base.py                 SemanticSegmenterPlugin
+    └── threshold.py            reference method: background-corrected dark-line threshold
 tests/test_core.py              use cases against fakes (no files, no network)
 tests/test_plugins.py           registry, entry-point discovery, reference method
+tests/test_semantic.py          pixel metrics, SegmentMicrographs with fakes, threshold, MRC reader, CLI
 ```
 
 ## Core models (`domain/models.py`)
@@ -87,6 +109,10 @@ tests/test_plugins.py           registry, entry-point discovery, reference metho
 | `MethodOutcome`, `ComparisonItem` | one method on one image (time, result, match, pairs) / all methods on one image |
 | `MethodSummary`, `ComparisonSummary` | per-method totals: setup and run time, instances, F1 etc., pooled pair AUROC |
 | `ItemOutcome(ref, status, …)` | what happened to one image (ok / skipped / failed), turns itself into a report row |
+| `Micrograph(data, ref, pixel_size)` | 2-D float32 image to segment; `pixel_size` in Å/px or `None` |
+| `SemanticResult(mask, method, probability, info, artifacts)` | semantic output: the `MembraneMask` (input of an instance method), optional probability map in [0, 1] |
+| `PixelScores(tp, fp, fn, tn)`, `SemanticSummary` | pixel confusion counts (additive; `.iou`, `.dice`, `.precision`, `.recall`) / pooled over images |
+| `MicrographOutcome(ref, status, semantic, instances, scores, …)` | one micrograph through `SegmentMicrographs`; report row with `semantic_*` / `instance_*` columns |
 
 ## Ports (`domain/ports.py`)
 
@@ -101,6 +127,10 @@ tests/test_plugins.py           registry, entry-point discovery, reference metho
 | `ComparisonSink` | `SideBySideSink` | one side-by-side preview per compared image |
 | `ComparisonReportWriter` | `ComparisonCsvReport` | `comparison.csv` (per image) + `comparison.json` (per method) |
 | `ComparisonListener` | `ConsoleComparison` | per-image lines and the final results table |
+| `SemanticSegmenter.segment(micrograph) -> SemanticResult` | `ThresholdSegmenter`, plugin packages | the semantic method; must do no file I/O |
+| `MicrographReader`, `GroundTruthMaskReader` | `MicrographFileReader`, `ImageFileGroundTruthMaskReader` | load micrographs (+ pixel size) / GT membrane masks |
+| `SemanticSink.exists/save` | `SemanticMaskSink`, `SemanticPreviewSink` (in a `CompositeSink`) | persist masks / probability maps / previews |
+| `SemanticReportWriter`, `MicrographListener` | `CsvReportWriter`, `ConsoleMicrographProgress` | `summary.csv` (+ `summary.json` with GT) / log lines |
 
 ## Use cases (`application/use_cases.py`)
 
@@ -118,8 +148,17 @@ tests/test_plugins.py           registry, entry-point discovery, reference metho
   the first image, untimed, so GPU/cuDNN start-up does not count. Setup time (e.g. loading the network)
   is measured by the composition root and reported separately.
 
-None of them imports files, a network library or a concrete method; `tests/test_core.py` runs both with
-in-memory fakes.
+* **`SegmentMicrographs`** (`application/semantic.py`) takes semantic, source, reader, instance,
+  semantic_sink, instance_sink, gt_reader, report, progress and skip_existing. For each micrograph it:
+  1. reads it and runs the semantic method; a mask whose shape differs from the image's counts as a failure;
+  2. saves the mask;
+  3. if `instance` is set, runs it on the mask and saves the instances;
+  4. if a GT reader is set and the image has `ref.gt_path`, computes `pixel_scores`.
+
+  Pooled scores are returned as a `SemanticSummary`.
+
+None of them imports files, a network library or a concrete method. `tests/test_core.py` and
+`tests/test_semantic.py` run them with in-memory fakes.
 
 ## Command line
 
@@ -169,6 +208,24 @@ Outputs: `<key>.tif` (uint16, uint32 if > 65 535 instances), `<key>_preview.png`
 `summary.csv` (one row per image: status, size, method info, n_instances, seconds, tp/fp/fn),
 `summary.json` (evaluation).
 
+### `semantic`
+`memseg semantic MICROGRAPHS... -o OUT [--method SEMANTIC] [--instance METHOD] [--gt_dir DIR]` runs
+`SegmentMicrographs`.
+
+* The semantic method's options and the instance method's options are both added to the one parser.
+  If two of them clash, the command stops with an error.
+* Parameters:
+  * semantic method: `--set` / `--config`;
+  * instance method: `--instance_set` / `--instance_config`.
+* Pixel size: the MRC header value is used (0 and 1.0 count as unset), else `--pixel_size`, else
+  `None`, in which case the method uses its own default.
+* Outputs:
+  * `<key>_mask.tif`;
+  * optionally `<key>_prob.tif` and `<key>_mask.png`;
+  * `instances/<key>.tif` (+ `_preview.png`);
+  * `summary.csv`, plus `summary.json` with pooled pixel IoU / Dice when `--gt_dir` is given.
+* An existing `<key>_mask.tif` means "done" unless `--overwrite` is given.
+
 ## Extending
 
 **A new segmentation method**
@@ -186,7 +243,12 @@ Outputs: `<key>.tif` (uint16, uint32 if > 65 535 instances), `<key>_preview.png`
    Nothing in `domain`, `application` or `io` changes. The method's package can stay private;
    the framework only needs it installed.
 
-**A new input/output** (e.g. MRC files, a CryoSPARC job, a database): implement the matching port
+**A new semantic method**: the same steps with `SemanticSegmenter` (micrograph → `SemanticResult`),
+`memseg.semantic.base.SemanticSegmenterPlugin` and the entry-point group `memseg.semantic`.
+Its CLI options share the `memseg semantic` command line with the instance method's, so prefix
+them (e.g. `--mynet_model`).
+
+**A new input/output** (e.g. a CryoSPARC job, a database): implement the matching port
 (`ImageSource`, `MaskReader`, `ResultSink`, `ReportWriter`, `ProgressListener`) under `io/` or in the
 host application, and wire it in a composition root (`cli.py` or the host's own). Use cases and methods
 stay untouched; e.g. a CryoSPARC plugin can call `SegmentImages(...)` with its own source and sink.
