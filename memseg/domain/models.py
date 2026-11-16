@@ -69,7 +69,8 @@ class InstanceLabels:
     @classmethod
     def consecutive(cls, data: np.ndarray) -> InstanceLabels:
         """Relabel any integer map to consecutive ids 1..N (negative/zero -> background)."""
-        a = np.asarray(data).astype(np.int64)
+        # plain np.ndarray: numpy 2.5 stubs lack a scalar max() overload for int64-typed arrays
+        a: np.ndarray = np.asarray(data).astype(np.int64)
         a[a < 0] = 0
         ids = np.unique(a)
         ids = ids[ids > 0]
