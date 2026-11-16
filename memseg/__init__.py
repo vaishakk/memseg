@@ -9,4 +9,4 @@ Layers (dependencies point inwards only, see architecture.md):
     memseg.cli          composition root: parses arguments and wires everything together
 """
 
-__version__ = "0.3.0.dev0"
+__version__ = "0.3.0"
