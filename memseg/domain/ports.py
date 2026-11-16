@@ -43,6 +43,52 @@ class InstanceSegmenter(ABC):
         return self.name
 
 
+class SegmenterStages(ABC):
+    """The per-image CPU stages of a `StagedSegmenter`.
+
+    Use cases may run them in worker processes, so an instance must be picklable: plain
+    configuration only (no model, no open files, no GPU state), and its module must not
+    import heavy GPU libraries at import time.
+    """
+
+    @abstractmethod
+    def prepare(self, mask: MembraneMask) -> Any:
+        """Per-image work before `StagedSegmenter.infer` (e.g. rescaling). Result must be picklable."""
+
+    @abstractmethod
+    def finish(self, mask: MembraneMask, prepared: Any, inferred: Any) -> SegmentationResult:
+        """Per-image work after `infer` (post-processing) -> the final result. No file I/O."""
+
+
+class StagedSegmenter(InstanceSegmenter):
+    """An instance method split into per-image CPU stages and one batchable stage.
+
+        prepare(mask)  ->  infer([prepared, ...])  ->  finish(mask, prepared, inferred)
+        (any process)      (the owning process)        (any process)
+
+    `infer` holds the expensive shared state (e.g. a network on a GPU) and receives batches;
+    `prepare` / `finish` come from `stages()` and can run for many images at once in other
+    processes. `segment` runs the three stages in order, so a sequential run and a parallel
+    run execute the same code and give the same results.
+    """
+
+    #: preferred number of images per `infer` call
+    batch_size: int = 1
+
+    @abstractmethod
+    def stages(self) -> SegmenterStages:
+        """The picklable per-image stages (see SegmenterStages)."""
+
+    @abstractmethod
+    def infer(self, prepared: Sequence[Any]) -> list[Any]:
+        """One result per prepared item, in order. Results must be picklable."""
+
+    def segment(self, mask: MembraneMask) -> SegmentationResult:
+        st = self.stages()
+        prepared = st.prepare(mask)
+        return st.finish(mask, prepared, self.infer([prepared])[0])
+
+
 class ImageSource(ABC):
     """Enumerates the images a use case should process."""
 
@@ -128,6 +174,40 @@ class SemanticSegmenter(ABC):
     def describe(self) -> str:
         """One line for logs (model, key parameters)."""
         return self.name
+
+
+class SemanticStages(ABC):
+    """The per-image CPU stages of a `StagedSemanticSegmenter`; same rules as `SegmenterStages`
+    (picklable, configuration only, no GPU libraries imported at module level)."""
+
+    @abstractmethod
+    def prepare(self, image: Micrograph) -> Any:
+        """Per-image work before `infer`. Result must be picklable."""
+
+    @abstractmethod
+    def finish(self, image: Micrograph, prepared: Any, inferred: Any) -> SemanticResult:
+        """Per-image work after `infer` -> the final result. No file I/O."""
+
+
+class StagedSemanticSegmenter(SemanticSegmenter):
+    """A semantic method split like `StagedSegmenter`: prepare (any process) -> infer on batches
+    (the process that holds the model) -> finish (any process)."""
+
+    #: preferred number of images per `infer` call
+    batch_size: int = 1
+
+    @abstractmethod
+    def stages(self) -> SemanticStages:
+        """The picklable per-image stages."""
+
+    @abstractmethod
+    def infer(self, prepared: Sequence[Any]) -> list[Any]:
+        """One result per prepared item, in order. Results must be picklable."""
+
+    def segment(self, image: Micrograph) -> SemanticResult:
+        st = self.stages()
+        prepared = st.prepare(image)
+        return st.finish(image, prepared, self.infer([prepared])[0])
 
 
 class MicrographReader(ABC):

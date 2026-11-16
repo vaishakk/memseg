@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import time
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 
-from ..domain.metrics import match_instances, summarize
-from ..domain.models import EvaluationSummary, ImageRef, ItemOutcome, Status
+from ..domain.metrics import summarize
+from ..domain.models import EvaluationSummary, ItemOutcome
 from ..domain.ports import (
     GroundTruthReader,
     ImageSource,
@@ -17,17 +17,15 @@ from ..domain.ports import (
     ReportWriter,
     ResultSink,
 )
-
-
-def _describe_error(e: BaseException) -> str:
-    return f"{type(e).__name__}: {e}"
+from .parallel import ImageJob, run_images
 
 
 @dataclass
 class SegmentImages:
     """Segment every image from a source and hand the results to a sink.
 
-    Failures on single images are recorded and do not stop the run.
+    Failures on single images are recorded and do not stop the run. With an `executor`
+    (injected by the composition root), images are processed in parallel; see parallel.py.
     """
 
     segmenter: InstanceSegmenter
@@ -37,38 +35,42 @@ class SegmentImages:
     report: ReportWriter | None = None
     progress: ProgressListener = field(default_factory=ProgressListener)
     skip_existing: bool = True
+    executor: Executor | None = None
+    batch_size: int | None = None  # None: the staged segmenter's preferred batch
+    max_in_flight: int = 8  # images read but not finished (parallel runs)
 
     def run(self) -> list[ItemOutcome]:
         refs = list(self.source)
         self.progress.start(len(refs), f"segment with {self.segmenter.describe()}")
-        outcomes = []
-        for i, ref in enumerate(refs, 1):
-            outcome = self._one(ref)
-            outcomes.append(outcome)
-            self.progress.item_done(i, len(refs), outcome)
+        count = 0
+
+        def on_done(o: ItemOutcome) -> None:
+            nonlocal count
+            count += 1
+            self.progress.item_done(count, len(refs), o)
+
+        outcomes = run_images(
+            refs,
+            self.segmenter,
+            ImageJob(self.reader, self.sink),
+            on_done,
+            skip=self.sink.exists if self.skip_existing else None,
+            executor=self.executor,
+            batch_size=self.batch_size,
+            max_in_flight=self.max_in_flight,
+        )
         if self.report is not None:
             self.report.write(outcomes)
         self.progress.finished(outcomes, None)
         return outcomes
-
-    def _one(self, ref: ImageRef) -> ItemOutcome:
-        if self.skip_existing and self.sink.exists(ref):
-            return ItemOutcome(ref=ref, status=Status.SKIPPED)
-        t0 = time.time()
-        try:
-            mask = self.reader.read(ref)
-            result = self.segmenter.segment(mask)
-            self.sink.save(ref, result)
-            return ItemOutcome(ref=ref, status=Status.OK, seconds=time.time() - t0, shape=mask.shape, result=result)
-        except Exception as e:  # keep going on bad inputs
-            return ItemOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0, error=_describe_error(e))
 
 
 @dataclass
 class EvaluateSegmenter:
     """Segment images that have ground truth and score them (precision / recall / F1 / IoU).
 
-    The sink is optional; give one to also keep the predicted label maps.
+    The sink is optional; give one to also keep the predicted label maps. With an `executor`,
+    images are processed in parallel; see parallel.py.
     """
 
     segmenter: InstanceSegmenter
@@ -79,28 +81,29 @@ class EvaluateSegmenter:
     report: ReportWriter | None = None
     progress: ProgressListener = field(default_factory=ProgressListener)
     iou_threshold: float = 0.5
+    executor: Executor | None = None
+    batch_size: int | None = None
+    max_in_flight: int = 8
 
     def run(self) -> tuple[list[ItemOutcome], EvaluationSummary]:
         refs = list(self.source)
         self.progress.start(len(refs), f"evaluate {self.segmenter.describe()}")
-        outcomes = []
-        for i, ref in enumerate(refs, 1):
-            t0 = time.time()
-            try:
-                if ref.gt_path is None:
-                    raise ValueError("no ground truth for this image")
-                mask = self.reader.read(ref)
-                gt = self.gt_reader.read(ref)
-                result = self.segmenter.segment(mask)
-                self.sink.save(ref, result)
-                m = match_instances(gt, result.labels, self.iou_threshold)
-                outcome = ItemOutcome(
-                    ref=ref, status=Status.OK, seconds=time.time() - t0, shape=mask.shape, result=result, match=m
-                )
-            except Exception as e:
-                outcome = ItemOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0, error=_describe_error(e))
-            outcomes.append(outcome)
-            self.progress.item_done(i, len(refs), outcome)
+        count = 0
+
+        def on_done(o: ItemOutcome) -> None:
+            nonlocal count
+            count += 1
+            self.progress.item_done(count, len(refs), o)
+
+        outcomes = run_images(
+            refs,
+            self.segmenter,
+            ImageJob(self.reader, self.sink, self.gt_reader, self.iou_threshold),
+            on_done,
+            executor=self.executor,
+            batch_size=self.batch_size,
+            max_in_flight=self.max_in_flight,
+        )
         summary = summarize([o.match for o in outcomes if o.match is not None])
         if self.report is not None:
             self.report.write(outcomes, summary)

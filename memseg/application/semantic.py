@@ -5,11 +5,11 @@ Knows nothing about files, networks or a specific method.
 
 from __future__ import annotations
 
-import time
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 
-from ..domain.metrics import pixel_scores, summarize_semantic
-from ..domain.models import ImageRef, MicrographOutcome, SemanticSummary, Status
+from ..domain.metrics import summarize_semantic
+from ..domain.models import MicrographOutcome, SemanticSummary
 from ..domain.ports import (
     GroundTruthMaskReader,
     ImageSource,
@@ -22,10 +22,7 @@ from ..domain.ports import (
     SemanticSegmenter,
     SemanticSink,
 )
-
-
-def _describe_error(e: BaseException) -> str:
-    return f"{type(e).__name__}: {e}"
+from .parallel import MicrographJob, run_images
 
 
 @dataclass
@@ -36,6 +33,8 @@ class SegmentMicrographs:
     * `gt_reader`: when given, images whose `ref.gt_path` is set are scored against that
       ground-truth membrane mask (pixel IoU / Dice); a summary over the scored images is returned.
     * `semantic_sink` decides "already done" for `skip_existing`.
+    * `executor`: process micrographs in parallel (see parallel.py). A staged semantic method keeps
+      `infer` in this process; its CPU stages, the instance method, saving and scoring run in workers.
 
     Failures on single images are recorded and do not stop the run.
     """
@@ -50,6 +49,9 @@ class SegmentMicrographs:
     report: SemanticReportWriter | None = None
     progress: MicrographListener = field(default_factory=MicrographListener)
     skip_existing: bool = False
+    executor: Executor | None = None
+    batch_size: int | None = None  # None: the staged semantic method's preferred batch
+    max_in_flight: int = 8  # micrographs read but not finished (parallel runs)
 
     def describe(self) -> str:
         d = self.semantic.describe()
@@ -58,44 +60,27 @@ class SegmentMicrographs:
     def run(self) -> tuple[list[MicrographOutcome], SemanticSummary | None]:
         refs = list(self.source)
         self.progress.start(len(refs), f"segment micrographs with {self.describe()}")
-        outcomes = []
-        for i, ref in enumerate(refs, 1):
-            outcome = self._one(ref)
-            outcomes.append(outcome)
-            self.progress.item_done(i, len(refs), outcome)
+        count = 0
+
+        def on_done(o: MicrographOutcome) -> None:
+            nonlocal count
+            count += 1
+            self.progress.item_done(count, len(refs), o)
+
+        job = MicrographJob(self.reader, self.semantic_sink, self.instance, self.instance_sink, self.gt_reader)
+        outcomes = run_images(
+            refs,
+            self.semantic,
+            job,
+            on_done,
+            skip=self.semantic_sink.exists if self.skip_existing else None,
+            executor=self.executor,
+            batch_size=self.batch_size,
+            max_in_flight=self.max_in_flight,
+        )
         scored = [o.scores for o in outcomes if o.scores is not None]
         summary = summarize_semantic(scored) if scored else None
         if self.report is not None:
             self.report.write(outcomes, summary)
         self.progress.finished(outcomes, summary)
         return outcomes, summary
-
-    def _one(self, ref: ImageRef) -> MicrographOutcome:
-        if self.skip_existing and self.semantic_sink.exists(ref):
-            return MicrographOutcome(ref=ref, status=Status.SKIPPED)
-        t0 = time.time()
-        try:
-            image = self.reader.read(ref)
-            sem = self.semantic.segment(image)
-            if sem.mask.shape != image.shape:
-                raise ValueError(f"method returned a {sem.mask.shape} mask for a {image.shape} image")
-            sem.mask.ref = ref
-            self.semantic_sink.save(ref, sem)
-            inst = None
-            if self.instance is not None:
-                inst = self.instance.segment(sem.mask)
-                self.instance_sink.save(ref, inst)
-            scores = None
-            if self.gt_reader is not None and ref.gt_path is not None:
-                scores = pixel_scores(self.gt_reader.read(ref), sem.mask)
-            return MicrographOutcome(
-                ref=ref,
-                status=Status.OK,
-                seconds=time.time() - t0,
-                shape=image.shape,
-                semantic=sem,
-                instances=inst,
-                scores=scores,
-            )
-        except Exception as e:  # keep going on bad inputs
-            return MicrographOutcome(ref=ref, status=Status.FAILED, seconds=time.time() - t0, error=_describe_error(e))

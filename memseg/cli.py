@@ -17,14 +17,18 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import multiprocessing
 import os
 import sys
 import time
 from collections.abc import Sequence
+from concurrent.futures import Executor, ProcessPoolExecutor
+from dataclasses import replace
+from typing import Any
 
 from . import segmenters, semantic
 from .application import CompareSegmenters, EvaluateSegmenter, PairSampling, SegmentImages, SegmentMicrographs
-from .domain import CompositeSink, ImageSource, NullSink, ResultSink, SemanticSink, Status
+from .domain import CompositeSink, ImageSource, InstanceSegmenter, NullSink, ResultSink, SemanticSink, Status
 from .io import (
     IMAGE_EXTS,
     MICROGRAPH_EXTS,
@@ -51,6 +55,7 @@ from .segmenters.base import load_overrides
 
 DEFAULT_METHOD = "components"
 DEFAULT_SEMANTIC_METHOD = "threshold"
+WORKER_THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -72,6 +77,53 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--limit", type=int, default=None, help="process at most N images")
     p.add_argument("--sample", type=int, default=None, help="process N randomly chosen images")
     p.add_argument("--seed", type=int, default=0, help="random seed for --sample")
+    _parallel_options(p)
+
+
+def _parallel_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="process images in N worker processes (1 = sequential). A staged method (e.g. a network + "
+        "post-processing) keeps its network in this process and runs post-processing in the workers",
+    )
+    p.add_argument(
+        "--batch_size",
+        type=int,
+        default=None,
+        help="images per network call of a staged method with --workers > 1 (default: the method's choice)",
+    )
+
+
+def _parallel_settings(args: argparse.Namespace) -> dict[str, Any] | None:
+    """executor / batch_size / max_in_flight for a use case; None (after a message) on bad values."""
+    if args.batch_size is not None and args.batch_size < 1:
+        print("--batch_size must be >= 1", file=sys.stderr)
+        return None
+    return {
+        "executor": _executor(args.workers),
+        "batch_size": args.batch_size,
+        "max_in_flight": 2 * max(args.workers, 1),
+    }
+
+
+def _shutdown(parallel: dict[str, Any]) -> None:
+    if parallel["executor"] is not None:
+        parallel["executor"].shutdown(cancel_futures=True)
+
+
+def _executor(workers: int) -> Executor | None:
+    """Worker processes for --workers N. 'spawn': the main process may hold CUDA state, which must not
+    be forked; workers import only what the per-image stages need."""
+    if workers <= 1:
+        return None
+    # One math-library thread per worker: N workers x (cores) BLAS/OpenMP threads oversubscribe the CPU.
+    # Spawned workers inherit the environment; this process has already loaded its libraries, so it is
+    # not affected. Values the user set explicitly are kept.
+    for var in WORKER_THREAD_VARS:
+        os.environ.setdefault(var, "1")
+    return ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
 
 
 def build_parser(method: str | None = None, compare_methods: Sequence[str] = ()) -> argparse.ArgumentParser:
@@ -360,6 +412,7 @@ def build_semantic_parser(method: str | None = None, instance: str | None = None
     p.add_argument("--limit", type=int, default=None, help="process at most N images")
     p.add_argument("--sample", type=int, default=None, help="process N randomly chosen images")
     p.add_argument("--seed", type=int, default=0, help="random seed for --sample")
+    _parallel_options(p)
     if method:
         semantic.get_plugin(method).add_arguments(p.add_argument_group(f"{method} (semantic) options"))
     if instance:
@@ -427,7 +480,13 @@ def run_semantic(argv: Sequence[str]) -> int:
         progress=ConsoleMicrographProgress(header=header + f"\noutput      {out_dir}"),
         skip_existing=not args.overwrite,
     )
-    outcomes, _ = use_case.run()
+    parallel = _parallel_settings(args)
+    if parallel is None:
+        return 2
+    try:
+        outcomes, _ = replace(use_case, **parallel).run()
+    finally:
+        _shutdown(parallel)
     if not outcomes:
         print("no images found", file=sys.stderr)
         return 1
@@ -468,6 +527,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = CsvReportWriter(out_dir) if out_dir else None
     progress = ConsoleProgress(header=f"method      {segmenter.describe()}\noutput      {out_dir or '(none)'}")
 
+    parallel = _parallel_settings(args)
+    if parallel is None:
+        return 2
+    try:
+        return _run_images(args, segmenter, reader, out_dir, report, progress, parallel)
+    finally:
+        _shutdown(parallel)
+
+
+def _run_images(
+    args: argparse.Namespace,
+    segmenter: InstanceSegmenter,
+    reader: ImageFileMaskReader,
+    out_dir: str | None,
+    report: CsvReportWriter | None,
+    progress: ConsoleProgress,
+    parallel: dict[str, Any],
+) -> int:
     source: ImageSource
     if args.command == "segment":
         for inp in args.inputs:
@@ -492,6 +569,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report=report,
             progress=progress,
             skip_existing=not args.overwrite,
+            **parallel,
         ).run()
     else:
         source = LabelledDatasetSource(args.datasets, sample=args.sample, seed=args.seed, limit=args.limit)
@@ -504,6 +582,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report=report,
             progress=progress,
             iou_threshold=args.iou,
+            **parallel,
         ).run()
 
     if not outcomes:
