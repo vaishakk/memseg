@@ -23,6 +23,7 @@ import sys
 import time
 from collections.abc import Sequence
 from concurrent.futures import Executor, ProcessPoolExecutor
+from dataclasses import replace
 from typing import Any
 
 from . import segmenters, semantic
@@ -76,6 +77,10 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--limit", type=int, default=None, help="process at most N images")
     p.add_argument("--sample", type=int, default=None, help="process N randomly chosen images")
     p.add_argument("--seed", type=int, default=0, help="random seed for --sample")
+    _parallel_options(p)
+
+
+def _parallel_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--workers",
         type=int,
@@ -89,6 +94,23 @@ def _common(p: argparse.ArgumentParser) -> None:
         default=None,
         help="images per network call of a staged method with --workers > 1 (default: the method's choice)",
     )
+
+
+def _parallel_settings(args: argparse.Namespace) -> dict[str, Any] | None:
+    """executor / batch_size / max_in_flight for a use case; None (after a message) on bad values."""
+    if args.batch_size is not None and args.batch_size < 1:
+        print("--batch_size must be >= 1", file=sys.stderr)
+        return None
+    return {
+        "executor": _executor(args.workers),
+        "batch_size": args.batch_size,
+        "max_in_flight": 2 * max(args.workers, 1),
+    }
+
+
+def _shutdown(parallel: dict[str, Any]) -> None:
+    if parallel["executor"] is not None:
+        parallel["executor"].shutdown(cancel_futures=True)
 
 
 def _executor(workers: int) -> Executor | None:
@@ -390,6 +412,7 @@ def build_semantic_parser(method: str | None = None, instance: str | None = None
     p.add_argument("--limit", type=int, default=None, help="process at most N images")
     p.add_argument("--sample", type=int, default=None, help="process N randomly chosen images")
     p.add_argument("--seed", type=int, default=0, help="random seed for --sample")
+    _parallel_options(p)
     if method:
         semantic.get_plugin(method).add_arguments(p.add_argument_group(f"{method} (semantic) options"))
     if instance:
@@ -457,7 +480,13 @@ def run_semantic(argv: Sequence[str]) -> int:
         progress=ConsoleMicrographProgress(header=header + f"\noutput      {out_dir}"),
         skip_existing=not args.overwrite,
     )
-    outcomes, _ = use_case.run()
+    parallel = _parallel_settings(args)
+    if parallel is None:
+        return 2
+    try:
+        outcomes, _ = replace(use_case, **parallel).run()
+    finally:
+        _shutdown(parallel)
     if not outcomes:
         print("no images found", file=sys.stderr)
         return 1
@@ -498,20 +527,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = CsvReportWriter(out_dir) if out_dir else None
     progress = ConsoleProgress(header=f"method      {segmenter.describe()}\noutput      {out_dir or '(none)'}")
 
-    if args.batch_size is not None and args.batch_size < 1:
-        print("--batch_size must be >= 1", file=sys.stderr)
+    parallel = _parallel_settings(args)
+    if parallel is None:
         return 2
-    executor = _executor(args.workers)
-    parallel: dict[str, Any] = {
-        "executor": executor,
-        "batch_size": args.batch_size,
-        "max_in_flight": 2 * max(args.workers, 1),
-    }
     try:
         return _run_images(args, segmenter, reader, out_dir, report, progress, parallel)
     finally:
-        if executor is not None:
-            executor.shutdown(cancel_futures=True)
+        _shutdown(parallel)
 
 
 def _run_images(

@@ -176,6 +176,40 @@ class SemanticSegmenter(ABC):
         return self.name
 
 
+class SemanticStages(ABC):
+    """The per-image CPU stages of a `StagedSemanticSegmenter`; same rules as `SegmenterStages`
+    (picklable, configuration only, no GPU libraries imported at module level)."""
+
+    @abstractmethod
+    def prepare(self, image: Micrograph) -> Any:
+        """Per-image work before `infer`. Result must be picklable."""
+
+    @abstractmethod
+    def finish(self, image: Micrograph, prepared: Any, inferred: Any) -> SemanticResult:
+        """Per-image work after `infer` -> the final result. No file I/O."""
+
+
+class StagedSemanticSegmenter(SemanticSegmenter):
+    """A semantic method split like `StagedSegmenter`: prepare (any process) -> infer on batches
+    (the process that holds the model) -> finish (any process)."""
+
+    #: preferred number of images per `infer` call
+    batch_size: int = 1
+
+    @abstractmethod
+    def stages(self) -> SemanticStages:
+        """The picklable per-image stages."""
+
+    @abstractmethod
+    def infer(self, prepared: Sequence[Any]) -> list[Any]:
+        """One result per prepared item, in order. Results must be picklable."""
+
+    def segment(self, image: Micrograph) -> SemanticResult:
+        st = self.stages()
+        prepared = st.prepare(image)
+        return st.finish(image, prepared, self.infer([prepared])[0])
+
+
 class MicrographReader(ABC):
     @abstractmethod
     def read(self, ref: ImageRef) -> Micrograph: ...

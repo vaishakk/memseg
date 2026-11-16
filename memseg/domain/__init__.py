@@ -42,7 +42,9 @@ from .ports import (
     SemanticReportWriter,
     SemanticSegmenter,
     SemanticSink,
+    SemanticStages,
     StagedSegmenter,
+    StagedSemanticSegmenter,
 )
 
 __all__ = [
@@ -90,6 +92,8 @@ __all__ = [
     "SemanticReportWriter",
     "SemanticSegmenter",
     "SemanticSink",
+    "SemanticStages",
+    "StagedSemanticSegmenter",
     "pixel_scores",
     "summarize_semantic",
 ]

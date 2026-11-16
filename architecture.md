@@ -130,6 +130,7 @@ tests/test_semantic.py          pixel metrics, SegmentMicrographs with fakes, th
 | `ComparisonReportWriter` | `ComparisonCsvReport` | `comparison.csv` (per image) + `comparison.json` (per method) |
 | `ComparisonListener` | `ConsoleComparison` | per-image lines and the final results table |
 | `SemanticSegmenter.segment(micrograph) -> SemanticResult` | `ThresholdSegmenter`, plugin packages | the semantic method; must do no file I/O |
+| `StagedSemanticSegmenter` / `SemanticStages` | plugin packages | the semantic counterpart of `StagedSegmenter` / `SegmenterStages` |
 | `MicrographReader`, `GroundTruthMaskReader` | `MicrographFileReader`, `ImageFileGroundTruthMaskReader` | load micrographs (+ pixel size) / GT membrane masks |
 | `SemanticSink.exists/save` | `SemanticMaskSink`, `SemanticPreviewSink` (in a `CompositeSink`) | persist masks / probability maps / previews |
 | `SemanticReportWriter`, `MicrographListener` | `CsvReportWriter`, `ConsoleMicrographProgress` | `summary.csv` (+ `summary.json` with GT) / log lines |
@@ -166,7 +167,7 @@ None of them imports files, a network library or a concrete method. `tests/test_
 
 ## Parallel execution (`application/parallel.py`)
 
-`SegmentImages` and `EvaluateSegmenter` share one per-image runner, `run_images`. It takes an
+`SegmentImages`, `EvaluateSegmenter` and `SegmentMicrographs` share one per-image runner, `run_images`. It takes an
 optional `concurrent.futures.Executor`, which the composition root creates (`cli.py`: a
 `ProcessPoolExecutor` with the `spawn` start method for `--workers N`). The application layer never
 starts processes itself.
@@ -202,8 +203,16 @@ Rules:
     `infer` + finish), so it stays comparable with sequential runs. The console also prints the
     total wall time.
 
-`CompareSegmenters` stays sequential because it measures per-method timing. `SegmentMicrographs` is
-also sequential for now.
+The runner is generic over a per-image *job*, which holds the use case's I/O:
+* `ImageJob` (masks): read the mask (+ GT); afterwards save the result and match it against the GT.
+* `MicrographJob` (micrographs): read the micrograph. Afterwards it checks the mask shape, saves the
+  mask, runs the optional instance method on it and saves that, then scores against a GT mask. In a
+  parallel run all of this happens in the worker, so the instance method runs there too.
+
+The method is either the job's plain kind (`InstanceSegmenter` / `SemanticSegmenter`) or its staged
+kind (`StagedSegmenter` / `StagedSemanticSegmenter`).
+
+`CompareSegmenters` stays sequential because it measures per-method timing.
 
 ## Command line
 
@@ -271,6 +280,9 @@ Outputs: `<key>.tif` (uint16, uint32 if > 65 535 instances), `<key>_preview.png`
   * `instances/<key>.tif` (+ `_preview.png`);
   * `summary.csv`, plus `summary.json` with pooled pixel IoU / Dice when `--gt_dir` is given.
 * An existing `<key>_mask.tif` means "done" unless `--overwrite` is given.
+* `--workers N` / `--batch_size N`: as for `segment` (see *Parallel execution*). With a staged semantic
+  method, its `infer` stays in the main process. Its CPU stages, the instance method, saving and
+  scoring run in the workers.
 
 ## Extending
 
@@ -292,7 +304,8 @@ Outputs: `<key>.tif` (uint16, uint32 if > 65 535 instances), `<key>_preview.png`
 **A new semantic method**: the same steps with `SemanticSegmenter` (micrograph → `SemanticResult`),
 `memseg.semantic.base.SemanticSegmenterPlugin` and the entry-point group `memseg.semantic`.
 Its CLI options share the `memseg semantic` command line with the instance method's, so prefix
-them (e.g. `--mynet_model`).
+them (e.g. `--mynet_model`). A network-based method should be a `StagedSemanticSegmenter`, so that
+`--workers` keeps the network in one process.
 
 **A new input/output** (e.g. a CryoSPARC job, a database): implement the matching port
 (`ImageSource`, `MaskReader`, `ResultSink`, `ReportWriter`, `ProgressListener`) under `io/` or in the

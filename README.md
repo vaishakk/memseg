@@ -88,6 +88,7 @@ In `compare`, per-method parameters use `--set METHOD.KEY=VALUE` and `--config M
 | `--gt_dir DIR` | ground-truth masks with the same relative names: report pixel IoU / Dice |
 | `--pixel_size A` | Å/px when the file has none (an MRC header value is used when set; 0 and 1.0 count as unset) |
 | `--save_prob`, `--preview` | also write the probability map / PNG previews |
+| `--workers N`, `--batch_size N` | process micrographs in N worker processes (instance method included); see below |
 | `--preview_overlay` | draw the instance method's overlay on instance previews |
 
 ### Inputs and outputs
@@ -282,7 +283,9 @@ class MyNetSegmenter(StagedSegmenter):
 ```
 
 `segment(mask)` runs `prepare → infer → finish`, so the method still works sequentially and gives
-the same results either way. Keep GPU imports out of the module that defines the stages: workers
+the same results either way. Semantic methods use the same pattern: `StagedSemanticSegmenter` with
+`SemanticStages`, and `memseg semantic --workers N`.
+Keep GPU imports out of the module that defines the stages: workers
 are spawned and import only what they unpickle. Details are in
 [architecture.md](https://github.com/vaishakk/memseg/blob/main/architecture.md).
 
