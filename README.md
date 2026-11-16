@@ -104,6 +104,87 @@ In `compare`, per-method parameters use `--set METHOD.KEY=VALUE` and `--config M
   * `<name>_mask.tif` (uint8, 255 = membrane), plus `<name>_prob.tif` and `<name>_mask.png` when asked;
   * `instances/<name>.tif` (+ `_preview.png`) with `--instance`.
 
+## Performance: `--workers`
+
+`--workers N` processes N images at once in worker processes. Each image is still processed on one
+core, so a single image doesn't get faster; a folder of images does. The output is **byte-identical**
+to a sequential run: every file below was compared with the 1-worker run.
+
+| command | images | 1 worker | 4 | 8 | 12 | speed-up (best) |
+|---|---|---|---|---|---|---|
+| `segment --method components` | 48 masks | 20.9 s | 9.9 s | 9.4 s | 8.1 s | 2.6× |
+| `semantic --method threshold --instance components` | 24 micrographs | 62.5 s | 23.4 s | 16.6 s | 17.8 s | 3.8× |
+
+**Reading the numbers**
+
+* **How much a method gains depends on its CPU work per image.**
+  * `components` takes about 0.4 s per image, and much of that is reading and writing files. That part
+    can't run any faster in parallel.
+  * `threshold` + `components` takes about 2.6 s of computation per micrograph, so it gains more.
+  * Heavier methods, with several seconds of CPU post-processing per image, reached 4.5–6× with 8–12
+    workers on the same machine.
+* **Network methods:** for a staged method (a network + post-processing), the network stage runs in one
+  process and limits the speed-up. A method whose network takes about a third of the time gained
+  about 2×.
+
+**Memory: how many workers fit**
+
+Peak memory per process. `segment` was measured on 16 masks (8 × 1919×1855 + 8 × 4092×5760) and
+`semantic` on 12 micrographs (4092×5760).
+
+| command | main process | per worker | total at 1 / 4 / 8 / 12 workers |
+|---|---|---|---|
+| `segment --method components` | 0.8–0.9 GB (1.2 GB at 1 worker) | 0.6 GB | 1.2 / 2.3 / 4.4 / 4.7 GB |
+| `semantic --method threshold --instance components` | 2.5–2.6 GB (3.0 GB at 1 worker) | 0.8 GB | 3.0 / 4.2 / 5.3 / 8.4 GB |
+
+To choose `--workers` for your machine:
+
+```
+RAM needed ≈ main process + N × per worker + results kept by the main process
+```
+
+* **Treat the per-worker figure as an upper bound.** It is the peak RSS of the largest worker,
+  including shared libraries. Measured totals are lower.
+* **Leave headroom** for the OS, and don't use more workers than physical cores.
+* **Memory per worker scales with the pixel count of the largest images.** The figures are for
+  4092×5760 (23.6 Mpx) images.
+* **Methods add their own memory.** A method with a network also needs its model in the main
+  process, plus GPU memory. GPU memory does not grow with `--workers`, because only the main process
+  uses the GPU.
+* **Results kept by the main process (current limitation):** the use cases return every image's
+  result in memory, label maps included, with or without `--workers`. The main process therefore grows
+  per processed image by about:
+  * `segment`: 4 bytes/pixel (label map);
+  * `semantic`: 9 bytes/pixel (mask + probability map + instance labels).
+
+  For a 4092×5760 image that is about 94 MB or 212 MB. For large folders, process them in parts
+  (`--limit`, or one sub-folder at a time; existing outputs are skipped).
+* **How memory was measured:** peaks sampled every 0.25 s from `/proc/<pid>/smaps_rollup` for the
+  `memseg` process and its children. The main process and per-worker figures are RSS; the total is
+  PSS summed over all processes, so shared pages are counted once.
+
+**Conditions**
+
+* **Hardware:** AMD Ryzen 9 3900XT (12 cores / 24 threads), 62 GB RAM.
+* **Software:**
+  * Ubuntu 24.04, Linux 7.0;
+  * Python 3.11.15, numpy 2.4.6, scipy 1.17.1, scikit-image 0.26.0;
+  * memseg 0.3.0.dev0.
+* **A desktop in normal use, not an isolated machine:** about 22 GB of RAM was in use by other programs.
+* **Inputs:**
+  * Masks: 24 copies each of a 1919×1855 and a 4092×5760 binary membrane mask (TIFF).
+  * Micrographs: 24 copies of one 4092×5760 cryo-EM micrograph (MRC, 1.737 Å/px).
+  * Every run used copies of the same files. Inputs and outputs were on a local SSD, and the files were
+    in the page cache after the first run.
+* **Settings:** default method parameters.
+* **Timing:** the wall time of the whole command, including start-up, starting the workers and writing
+  all outputs (label maps, masks, `summary.csv`). Each configuration was run **once**, so expect a few
+  percent of variation.
+* **Memory:** measured per process, as described above, in a separate run on the same machine and
+  files.
+* **Workers:** `spawn` start method, one OpenMP/OpenBLAS/MKL thread per worker. `memseg` sets these
+  thread limits unless you have set them yourself.
+
 ## Writing your own method
 
 A segmentation method is any class that implements `InstanceSegmenter.segment(mask) -> SegmentationResult`.
