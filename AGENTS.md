@@ -37,6 +37,7 @@ Rules that follow from this:
 * **Built-in methods stay lightweight.**
   - The built-ins are `components` and `threshold`. They are reference methods that need only numpy and scipy.
   - Real methods (networks, private algorithms) live in their own packages. They register through the entry-point groups `memseg.segmenters` and `memseg.semantic`.
+* **Parallelism is injected.** Use cases take an optional `concurrent.futures.Executor` created by the composition root. Never start processes or threads inside `domain`, `application` or a method. A `StagedSegmenter`'s `stages()` and everything sent to workers must be picklable, and stage modules must not import torch or other GPU libraries at module level.
 * **Scoring lives in `domain/metrics.py`** so that every method is scored the same way. Don't compute metrics inside a method.
 
 If a change seems to need a boundary violation, the abstraction is probably missing something. Discuss it or extend the port. Don't add a cross-layer import.

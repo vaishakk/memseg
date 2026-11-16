@@ -68,6 +68,8 @@ memseg semantic --method threshold --instance components --help
 | `--preview_dir DIR` | write colour PNG previews |
 | `--preview_overlay` | draw the method's overlay (skeleton / junctions) on instance previews; off by default |
 | `--limit N`, `--sample N`, `--seed S` | process the first N / N random images |
+| `--workers N` | process images in N worker processes (default 1 = sequential); see below |
+| `--batch_size N` | images per network call of a staged method when `--workers` > 1 |
 | `--overwrite` (segment) | recompute images whose output already exists |
 | `--save_raw` (segment) | also write method intermediates (`<name>_raw.npz`) |
 | `--iou T` (evaluate, compare) | IoU threshold for a match (default 0.5) |
@@ -236,6 +238,53 @@ print(summary.f1, summary.mean_matched_iou)
 You can swap any adapter for your own implementation of the matching port in `memseg.domain`
 (`ImageSource`, `MaskReader`, `ResultSink`, `ReportWriter`, `ProgressListener`). For example, a port
 could read MRC files or write results into a CryoSPARC job.
+
+### Network + post-processing: `StagedSegmenter`
+
+`--workers N` runs images in N worker processes. A plain method runs whole in a worker. A method
+built around a network should not load the model in every worker. Split it with `StagedSegmenter`
+instead:
+
+* `infer` stays in the main process with the model and receives batches;
+* `prepare` / `finish`, the per-image CPU work, run in the workers.
+
+```python
+from dataclasses import dataclass
+
+import numpy as np
+from memseg.domain import InstanceLabels, SegmentationResult, SegmenterStages, StagedSegmenter
+
+
+@dataclass
+class MyStages(SegmenterStages):  # picklable: configuration only, no model
+    threshold: float = 0.5
+
+    def prepare(self, mask):  # worker: before the network
+        return mask.data.astype(np.float32)
+
+    def finish(self, mask, prepared, prob):  # worker: post-processing
+        labels = my_postprocess(prob > self.threshold)
+        return SegmentationResult(labels=InstanceLabels(labels), method="mynet")
+
+
+class MyNetSegmenter(StagedSegmenter):
+    name = "mynet"
+    batch_size = 4  # preferred images per infer() call
+
+    def __init__(self, model):
+        self.model = model
+
+    def stages(self):
+        return MyStages()
+
+    def infer(self, prepared):  # main process: one result per input, in order
+        return [run_network(self.model, x) for x in prepared]
+```
+
+`segment(mask)` runs `prepare → infer → finish`, so the method still works sequentially and gives
+the same results either way. Keep GPU imports out of the module that defines the stages: workers
+are spawned and import only what they unpickle. Details are in
+[architecture.md](https://github.com/vaishakk/memseg/blob/main/architecture.md).
 
 ### Semantic methods
 

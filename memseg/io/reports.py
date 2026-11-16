@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import sys
+import time
 from collections.abc import Sequence
 from typing import Any, TextIO
 
@@ -58,16 +59,18 @@ def _fmt(v) -> str:
 
 
 class ConsoleProgress(ProgressListener):
-    def __init__(self, stream: TextIO = sys.stdout, header: str = ""):
+    def __init__(self, stream: TextIO | None = None, header: str = ""):  # None: sys.stdout at print time
         self.stream, self.header = stream, header
+        self._t0: float | None = None
 
     def _p(self, s: str) -> None:
-        print(s, file=self.stream, flush=True)
+        print(s, file=self.stream or sys.stdout, flush=True)
 
     def start(self, total: int, description: str) -> None:
         self._p("=" * 64)
         if self.header:
             self._p(self.header)
+        self._t0 = time.perf_counter()
         self._p(f"{description}: {total} image(s)")
         self._p("=" * 64)
 
@@ -93,7 +96,11 @@ class ConsoleProgress(ProgressListener):
 
     def finished(self, outcomes: Sequence[ItemOutcome], summary: EvaluationSummary | None) -> None:
         n = {s: sum(o.status is s for o in outcomes) for s in Status}
-        self._p(f"done: {n[Status.OK]} ok, {n[Status.FAILED]} failed, {n[Status.SKIPPED]} skipped")
+        wall = time.perf_counter() - self._t0 if self._t0 is not None else None
+        self._p(
+            f"done: {n[Status.OK]} ok, {n[Status.FAILED]} failed, {n[Status.SKIPPED]} skipped"
+            + (f" in {wall:.1f}s" if wall is not None else "")
+        )
         if summary is not None:
             self._p(
                 "OVERALL: "
@@ -184,11 +191,11 @@ class ComparisonCsvReport(ComparisonReportWriter):
 class ConsoleComparison(ComparisonListener):
     """Per-image lines while running, then a side-by-side results table."""
 
-    def __init__(self, stream: TextIO = sys.stdout, header: str = ""):
+    def __init__(self, stream: TextIO | None = None, header: str = ""):  # None: sys.stdout at print time
         self.stream, self.header = stream, header
 
     def _p(self, s: str = "") -> None:
-        print(s, file=self.stream, flush=True)
+        print(s, file=self.stream or sys.stdout, flush=True)
 
     def start(self, total: int, methods: Sequence[str]) -> None:
         self._p("=" * 72)

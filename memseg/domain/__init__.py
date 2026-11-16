@@ -38,9 +38,11 @@ from .ports import (
     ProgressListener,
     ReportWriter,
     ResultSink,
+    SegmenterStages,
     SemanticReportWriter,
     SemanticSegmenter,
     SemanticSink,
+    StagedSegmenter,
 )
 
 __all__ = [
@@ -72,6 +74,8 @@ __all__ = [
     "ProgressListener",
     "ReportWriter",
     "ResultSink",
+    "SegmenterStages",
+    "StagedSegmenter",
     "match_instances",
     "summarize",
     # semantic segmentation

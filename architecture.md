@@ -119,6 +119,8 @@ tests/test_semantic.py          pixel metrics, SegmentMicrographs with fakes, th
 | port | implemented by | purpose |
 |---|---|---|
 | `InstanceSegmenter.segment(mask) -> SegmentationResult` | `ConnectedComponentsSegmenter`, plugin packages | the method; must do no file I/O |
+| `StagedSegmenter` (an `InstanceSegmenter`): `stages()`, `infer(batch)`, `batch_size` | plugin packages (e.g. a network + post-processing) | splits a method into picklable per-image CPU stages and one batchable stage that stays in the owning process; see *Parallel execution* |
+| `SegmenterStages.prepare(mask)` / `.finish(mask, prepared, inferred)` | returned by `StagedSegmenter.stages()` | the per-image CPU stages; picklable, no model, no file I/O |
 | `ImageSource` (iterable of `ImageRef`) | `FolderImageSource`, `LabelledDatasetSource` | which images; also handles `--sample/--seed/--limit` |
 | `MaskReader`, `GroundTruthReader` | `ImageFile*Reader` | load masks / GT labels |
 | `ResultSink.exists/save` | `LabelTiffSink`, `PreviewSink`, `ArtifactSink`, `CompositeSink`, `NullSink` | persist results; the first sink of a `CompositeSink` decides "already done" |
@@ -140,6 +142,8 @@ tests/test_semantic.py          pixel metrics, SegmentMicrographs with fakes, th
 * **`EvaluateSegmenter`**(segmenter, source, reader, gt_reader, sink, report, progress, iou_threshold):
   read mask + GT → segment → optionally save → `match_instances` → `summarize`.
 
+  Both take optional `executor`, `batch_size` and `max_in_flight`; see *Parallel execution* below.
+
 * **`CompareSegmenters`**(segmenters: name → method, source, reader, gt_reader, method_sinks,
   comparison_sink, report, progress, setup_seconds, iou_threshold, pairs, warmup):
   per image: read mask and GT (if `ref.gt_path`), sample pixel pairs once, run every method
@@ -159,6 +163,47 @@ tests/test_semantic.py          pixel metrics, SegmentMicrographs with fakes, th
 
 None of them imports files, a network library or a concrete method. `tests/test_core.py` and
 `tests/test_semantic.py` run them with in-memory fakes.
+
+## Parallel execution (`application/parallel.py`)
+
+`SegmentImages` and `EvaluateSegmenter` share one per-image runner, `run_images`. It takes an
+optional `concurrent.futures.Executor`, which the composition root creates (`cli.py`: a
+`ProcessPoolExecutor` with the `spawn` start method for `--workers N`). The application layer never
+starts processes itself.
+
+| executor | segmenter | what runs where |
+|---|---|---|
+| none (default) | any | every image in this process, in order: read → `segment` → save (→ match); the behaviour of earlier versions |
+| given | plain `InstanceSegmenter` | one job per image in a worker: read → `segment` → save (→ match) |
+| given | `StagedSegmenter` | worker: read → `prepare`; **this process**: `infer` on batches of up to `batch_size` prepared images; worker: `finish` → save (→ match) |
+
+Why the split: a network is loaded once, in the process that owns it (the GPU), and is fed in
+batches. The per-image CPU work around it (rescaling, post-processing), which is often most of the
+time, runs for several images at once. `StagedSegmenter.segment` runs the same three stages in order,
+so sequential and parallel runs execute the same code and give identical results.
+
+Rules:
+* **Picklable:** everything sent to a worker must be picklable. That covers the reader, sink and
+  ground-truth reader, `stages()` (configuration only, never the model) and a plain segmenter.
+  Results returned by `prepare` / `infer` must be picklable too.
+* **No GPU libraries in workers:** the stages' modules must not import torch or similar at module
+  level. Workers are spawned, so they import only what they unpickle.
+* **Bounded memory:** at most `max_in_flight` images are read but not yet finished (CLI: 2 × workers).
+* **Skips and failures:**
+  - `skip_existing` is decided in this process before any work is submitted;
+  - a failure in any stage marks only that image `FAILED`. A failed `infer` call fails the images in
+    its batch;
+  - if the pool breaks (e.g. a worker is killed for running out of memory), the remaining images are
+    recorded as failed.
+* **Order and timing:**
+  - progress is reported in completion order;
+  - returned outcomes and `summary.csv` are in input order;
+  - `seconds` per image is the sum of its own stage times (prepare + its share of the batch's
+    `infer` + finish), so it stays comparable with sequential runs. The console also prints the
+    total wall time.
+
+`CompareSegmenters` stays sequential because it measures per-method timing. `SegmentMicrographs` is
+also sequential for now.
 
 ## Command line
 
@@ -201,7 +246,8 @@ method later provides a continuous same-instance score, `pair_counts` can be rep
 computation without changing the use case.
 
 Shared options: `--method`, `--config JSON`, `--set KEY=VALUE` (repeatable), `--preview_dir`, `--preview_overlay`,
-`--limit`, `--sample`, `--seed`; `segment` adds `-o`, `--preview`, `--save_raw`, `--overwrite`,
+`--limit`, `--sample`, `--seed`, `--workers N` (worker processes; 1 = sequential), `--batch_size N` (`infer` batch of a
+staged method); `segment` adds `-o`, `--preview`, `--save_raw`, `--overwrite`,
 `--ext`, `--no_recursive`; `evaluate` adds `-o`, `--iou`.
 
 Outputs: `<key>.tif` (uint16, uint32 if > 65 535 instances), `<key>_preview.png`, `<key>_raw.npz`,
