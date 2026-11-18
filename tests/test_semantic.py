@@ -303,7 +303,8 @@ def test_cli_semantic_save_masked(tmp_path):
             data = np.array(m.data)
             assert m.voxel_size.x == pytest.approx(1.7, rel=1e-5)
         assert data.dtype == np.float32 and data.shape == img.shape
-        assert np.allclose(data[keep], img[keep]) and not data[~keep].any()
+        assert np.allclose(data[keep], img[keep])
+        assert np.allclose(data[~keep], img.astype(np.float32).mean(dtype=np.float64))
     # without the option nothing extra is written
     out2 = tmp_path / "out2"
     assert main([*argv[:3], str(out2), *argv[4:-1]]) == 0

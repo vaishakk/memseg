@@ -123,7 +123,8 @@ class SemanticMaskSink(SemanticSink):
 
 
 class MaskedMicrographSink(SemanticSink, ResultSink):
-    """<out_dir>/<key>_masked.mrc: the micrograph with everything outside the mask set to 0 (float32,
+    """<out_dir>/<key>_masked.mrc: the micrograph with everything outside the mask set to the
+    micrograph's mean (float32,
     the pixel size of `reader` in the header).
 
     Works as a semantic sink (the membrane mask) and as an instance sink (the pixels of the kept
@@ -142,7 +143,8 @@ class MaskedMicrographSink(SemanticSink, ResultSink):
         image = self.reader.read(ref)
         if keep.shape != image.shape:
             raise ValueError(f"{ref.key}: {keep.shape} mask for a {image.shape} micrograph")
-        masked = np.where(keep, image.data, 0).astype(np.float32)
+        data = np.asarray(image.data, dtype=np.float32)
+        masked = np.where(keep, data, np.float32(data.mean(dtype=np.float64)))
         p = _out_path(self.out_dir, ref, self.suffix)
         os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
         with _mrcfile().new(p, overwrite=True) as m:

@@ -400,8 +400,8 @@ def build_semantic_parser(method: str | None = None, instance: str | None = None
     p.add_argument(
         "--save_masked",
         action="store_true",
-        help="also write <name>_masked.mrc: the micrograph with everything outside the membrane mask set to 0 "
-        "and, with --instance, instances/<name>_masked.mrc: the same for the kept instances",
+        help="also write <name>_masked.mrc: the micrograph with everything outside the membrane mask set to "
+        "the micrograph's mean and, with --instance, instances/<name>_masked.mrc: the same for the kept instances",
     )
     p.add_argument(
         "--preview",

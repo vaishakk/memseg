@@ -88,7 +88,7 @@ In `compare`, per-method parameters use `--set METHOD.KEY=VALUE` and `--config M
 | `--gt_dir DIR` | ground-truth masks with the same relative names: report pixel IoU / Dice |
 | `--pixel_size A` | Å/px when the file has none (an MRC header value is used when set; 0 and 1.0 count as unset) |
 | `--save_prob`, `--preview` | also write the probability map / PNG previews |
-| `--save_masked` | also write the micrograph with everything outside the mask set to 0, as MRC |
+| `--save_masked` | also write the micrograph with everything outside the mask set to the micrograph's mean, as MRC |
 | `--workers N`, `--batch_size N` | process micrographs in N worker processes (instance method included); see below |
 | `--preview_overlay` | draw the instance method's overlay on instance previews |
 
@@ -105,7 +105,7 @@ In `compare`, per-method parameters use `--set METHOD.KEY=VALUE` and `--config M
   * `<name>_mask.tif` (uint8, 255 = membrane), plus `<name>_prob.tif` and `<name>_mask.png` when asked;
   * `instances/<name>.tif` (+ `_preview.png`) with `--instance`;
   * with `--save_masked`: `<name>_masked.mrc`, the micrograph (float32, header pixel size) with every
-    pixel outside the membrane mask set to 0, and with `--instance` also `instances/<name>_masked.mrc`,
+    pixel outside the membrane mask set to the micrograph's mean, and with `--instance` also `instances/<name>_masked.mrc`,
     the same for the kept instances.
 
 ## Performance: `--workers`
