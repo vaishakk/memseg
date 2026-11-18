@@ -15,11 +15,12 @@ from ..domain.models import (
     MembraneMask,
     Micrograph,
     MicrographOutcome,
+    SegmentationResult,
     SemanticResult,
     SemanticSummary,
     Status,
 )
-from ..domain.ports import GroundTruthMaskReader, MicrographListener, MicrographReader, SemanticSink
+from ..domain.ports import GroundTruthMaskReader, MicrographListener, MicrographReader, ResultSink, SemanticSink
 from .images import read_image, to_binary
 
 MICROGRAPH_EXTS = (".mrc", ".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp")
@@ -121,6 +122,35 @@ class SemanticMaskSink(SemanticSink):
             )
 
 
+class MaskedMicrographSink(SemanticSink, ResultSink):
+    """<out_dir>/<key>_masked.mrc: the micrograph with everything outside the mask set to 0 (float32,
+    the pixel size of `reader` in the header).
+
+    Works as a semantic sink (the membrane mask) and as an instance sink (the pixels of the kept
+    instances). The micrograph is read again with `reader`, so the values and pixel size are the
+    ones the method saw.
+    """
+
+    def __init__(self, out_dir: str, reader: MicrographReader, suffix: str = "_masked.mrc"):
+        self.out_dir, self.reader, self.suffix = out_dir, reader, suffix
+
+    def exists(self, ref: ImageRef) -> bool:
+        return os.path.isfile(_out_path(self.out_dir, ref, self.suffix))
+
+    def save(self, ref: ImageRef, result: SemanticResult | SegmentationResult) -> None:
+        keep = result.mask.data if isinstance(result, SemanticResult) else result.labels.data > 0
+        image = self.reader.read(ref)
+        if keep.shape != image.shape:
+            raise ValueError(f"{ref.key}: {keep.shape} mask for a {image.shape} micrograph")
+        masked = np.where(keep, image.data, 0).astype(np.float32)
+        p = _out_path(self.out_dir, ref, self.suffix)
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with _mrcfile().new(p, overwrite=True) as m:
+            m.set_data(masked)
+            if image.pixel_size is not None:
+                m.voxel_size = image.pixel_size
+
+
 class SemanticPreviewSink(SemanticSink):
     """<out_dir>/<key><suffix>: the mask as a white-on-black PNG (downscaled, thin lines kept)."""
 
@@ -191,6 +221,7 @@ __all__ = [
     "MICROGRAPH_EXTS",
     "ConsoleMicrographProgress",
     "ImageFileGroundTruthMaskReader",
+    "MaskedMicrographSink",
     "MicrographFileReader",
     "SemanticMaskSink",
     "SemanticPreviewSink",

@@ -266,3 +266,45 @@ def test_semantic_entry_points_are_discovered(monkeypatch, capsys):
     assert main(["methods"]) == 0
     out = capsys.readouterr().out
     assert "fake semantic method" in out and "semantic methods" in out
+
+
+def test_cli_semantic_save_masked(tmp_path):
+    mrcfile = pytest.importorskip("mrcfile")
+    import tifffile
+
+    img, _ = rings_micrograph()
+    (tmp_path / "in").mkdir()
+    with mrcfile.new(str(tmp_path / "in" / "mic.mrc")) as m:
+        m.set_data(img.astype(np.float32))
+        m.voxel_size = 1.7
+    out = tmp_path / "out"
+    argv = [
+        "semantic",
+        str(tmp_path / "in"),
+        "-o",
+        str(out),
+        "--set",
+        "k=4",
+        "--set",
+        "smooth_sigma=1",
+        "--set",
+        "min_area=50",
+        "--instance",
+        "components",
+        "--instance_set",
+        "min_size=50",
+        "--save_masked",
+    ]
+    assert main(argv) == 0
+    mask = tifffile.imread(out / "mic_mask.tif") > 0
+    labels = tifffile.imread(out / "instances" / "mic.tif") > 0
+    for path, keep in ((out / "mic_masked.mrc", mask), (out / "instances" / "mic_masked.mrc", labels)):
+        with mrcfile.open(str(path)) as m:
+            data = np.array(m.data)
+            assert m.voxel_size.x == pytest.approx(1.7, rel=1e-5)
+        assert data.dtype == np.float32 and data.shape == img.shape
+        assert np.allclose(data[keep], img[keep]) and not data[~keep].any()
+    # without the option nothing extra is written
+    out2 = tmp_path / "out2"
+    assert main([*argv[:3], str(out2), *argv[4:-1]]) == 0
+    assert not list(out2.rglob("*_masked.mrc"))

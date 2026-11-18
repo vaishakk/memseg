@@ -44,6 +44,7 @@ from .io import (
     ImageFileMaskReader,
     LabelledDatasetSource,
     LabelTiffSink,
+    MaskedMicrographSink,
     MicrographFileReader,
     PreviewSink,
     SemanticMaskSink,
@@ -397,6 +398,12 @@ def build_semantic_parser(method: str | None = None, instance: str | None = None
     p.add_argument("--no_header_pixel_size", action="store_true", help="ignore MRC header pixel sizes")
     p.add_argument("--save_prob", action="store_true", help="also write <name>_prob.tif when the method gives one")
     p.add_argument(
+        "--save_masked",
+        action="store_true",
+        help="also write <name>_masked.mrc: the micrograph with everything outside the membrane mask set to 0 "
+        "and, with --instance, instances/<name>_masked.mrc: the same for the kept instances",
+    )
+    p.add_argument(
         "--preview",
         action="store_true",
         help="also write <name>_mask.png and, with --instance, instances/<name>_preview.png",
@@ -459,19 +466,24 @@ def run_semantic(argv: Sequence[str]) -> int:
         limit=args.limit,
         gt_dir=args.gt_dir,
     )
+    reader = MicrographFileReader(args.pixel_size, use_header=not args.no_header_pixel_size)
     sem_sinks: list[SemanticSink] = [SemanticMaskSink(out_dir, probability=args.save_prob)]
     if args.preview:
         sem_sinks.append(SemanticPreviewSink(out_dir))
+    if args.save_masked:
+        sem_sinks.append(MaskedMicrographSink(out_dir, reader))
     inst_sinks: list[ResultSink] = [LabelTiffSink(inst_dir)] + (
         [PreviewSink(inst_dir, overlay=args.preview_overlay)] if args.preview else []
     )
+    if args.save_masked:
+        inst_sinks.append(MaskedMicrographSink(inst_dir, reader))
     header = f"semantic    {sem.describe()}"
     if inst is not None:
         header += f"\ninstance    {inst.describe()}"
     use_case = SegmentMicrographs(
         semantic=sem,
         source=source,
-        reader=MicrographFileReader(args.pixel_size, use_header=not args.no_header_pixel_size),
+        reader=reader,
         instance=inst,
         semantic_sink=CompositeSink(sem_sinks),
         instance_sink=CompositeSink(inst_sinks) if inst is not None else NullSink(),

@@ -278,6 +278,8 @@ Outputs: `<key>.tif` (uint16, uint32 if > 65 535 instances), `<key>_preview.png`
   * `<key>_mask.tif`;
   * optionally `<key>_prob.tif` and `<key>_mask.png`;
   * `instances/<key>.tif` (+ `_preview.png`);
+  * with `--save_masked`, `<key>_masked.mrc` and `instances/<key>_masked.mrc`
+    (`MaskedMicrographSink`: re-reads the micrograph with the run's reader, zero outside the mask);
   * `summary.csv`, plus `summary.json` with pooled pixel IoU / Dice when `--gt_dir` is given.
 * An existing `<key>_mask.tif` means "done" unless `--overwrite` is given.
 * `--workers N` / `--batch_size N`: as for `segment` (see *Parallel execution*). With a staged semantic
